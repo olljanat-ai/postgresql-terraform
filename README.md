@@ -82,8 +82,10 @@ metadata endpoint instead of the Azure CLI.
 ## How the isolation works
 
 * Each database is created with `CREATE DATABASE ... OWNER <its own role>`. From
-  PostgreSQL 16 onwards the `public` schema is owned by `pg_database_owner`, so
-  the owner has full rights inside its database without any extra grants.
+  PostgreSQL 15 onwards the `public` schema is owned by `pg_database_owner` and
+  `PUBLIC` no longer has `CREATE` on it, so the owner has full rights inside its
+  database without any extra grants and nobody else has any. `postgresql_version`
+  is therefore required to be 15 or newer.
 * `CONNECT` is revoked from `PUBLIC` on every managed database
   (`revoke_public_connect`, on by default). Without it every role on the server,
   including the owners of the other databases, could connect to all of them.
@@ -120,9 +122,9 @@ access token from `az account get-access-token`. An environment without
 | `administrator_password`        | Password of the built-in administrator. Pass as `TF_VAR_administrator_password`.        | `string`       | n/a                 |   yes    |
 | `databases`                     | Databases to create and how their owner authenticates. See below.                       | `list(object)` | `[]`                |    no    |
 | `entra_administrator`           | Entra principal that becomes an administrator of the server. Required for Entra owners. | `object`       | `null`              |    no    |
-| `location`                      | Azure region.                                                                           | `string`       | `"westeurope"`      |    no    |
-| `postgresql_version`            | Major PostgreSQL version.                                                               | `string`       | `"16"`              |    no    |
-| `sku_name`                      | Server SKU.                                                                             | `string`       | `"B_Standard_B1ms"` |    no    |
+| `location`                      | Azure region.                                                                           | `string`       | `"swedencentral"`   |    no    |
+| `postgresql_version`            | Major PostgreSQL version, 15 or newer.                                                  | `string`       | `"15"`              |    no    |
+| `sku_name`                      | Server SKU.                                                                             | `string`       | `"B_Standard_B2s"`  |    no    |
 | `storage_mb`                    | Storage in megabytes.                                                                   | `number`       | `32768`             |    no    |
 | `backup_retention_days`         | Days backups are kept.                                                                  | `number`       | `7`                 |    no    |
 | `administrator_login`           | Login of the built-in administrator.                                                    | `string`       | `"pgadmin"`         |    no    |
@@ -158,6 +160,13 @@ access token from `az account get-access-token`. An environment without
 
 ## Notes
 
+* Azure offers a different set of PostgreSQL versions per SKU and region. When
+  the requested combination is not offered, the create fails with
+  `ParameterOutOfRange: The value of the 'Version' should be in: []`, an empty
+  list rather than the versions that would work. List what a region actually has
+  with `az postgres flexible-server list-skus --location <region> --output
+  table`, and pin `location`, `sku_name` and `postgresql_version` in the
+  environment file.
 * An Entra principal is created inside PostgreSQL when the database is first
   created and is not removed when the database is destroyed. Renaming an
   `entra_principal` creates the new principal and leaves the old one in place;

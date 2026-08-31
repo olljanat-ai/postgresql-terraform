@@ -12,8 +12,17 @@
 
 subscription_id     = "b03f3a19-0547-4c63-a440-ae049cdc2889"
 resource_group_name = "rg-postgresql-prototype"
-location            = "westeurope"
+location            = "swedencentral"
 server_name         = "psql-prototype-0001"
+
+# Azure offers a different set of PostgreSQL versions per SKU and region, and
+# rejects the create with "ParameterOutOfRange: The value of the 'Version'
+# should be in: []" when the combination is not offered. This one is known to
+# work, list what a region has with:
+#
+#   az postgres flexible-server list-skus --location swedencentral --output table
+postgresql_version = "15"
+sku_name           = "B_Standard_B2s"
 
 tags = {
   environment = "prototype"
