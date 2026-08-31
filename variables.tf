@@ -1,15 +1,21 @@
-variable "name" {
-  description = "Name of the Azure Database for PostgreSQL flexible server."
+variable "subscription_id" {
+  description = "Azure subscription the resources are created into."
   type        = string
 }
 
 variable "resource_group_name" {
-  description = "Name of the resource group the server is created into."
+  description = "Name of the resource group, which is created by this configuration."
   type        = string
 }
 
 variable "location" {
-  description = "Azure region of the server."
+  description = "Azure region."
+  type        = string
+  default     = "westeurope"
+}
+
+variable "server_name" {
+  description = "Name of the Azure Database for PostgreSQL flexible server. Has to be globally unique."
   type        = string
 }
 
@@ -38,15 +44,14 @@ variable "backup_retention_days" {
 }
 
 variable "administrator_login" {
-  description = "Login of the built-in PostgreSQL administrator. It is used by Terraform to create the databases and their owners."
+  description = "Login of the built-in PostgreSQL administrator. Terraform uses it to create the databases and their owners."
   type        = string
   default     = "pgadmin"
 }
 
 variable "administrator_password" {
-  description = "Password of the built-in administrator. A random password is generated when this is null."
+  description = "Password of the built-in PostgreSQL administrator. Pass it as TF_VAR_administrator_password so that it stays out of the environment file. The postgresql provider needs it before the server exists, so it cannot be generated here."
   type        = string
-  default     = null
   sensitive   = true
 }
 
@@ -66,9 +71,8 @@ variable "firewall_rules" {
 }
 
 variable "entra_administrator" {
-  description = "Microsoft Entra ID principal that becomes an administrator of the server. Required when any database is owned by an Entra ID identity, because only an Entra administrator can create Entra principals inside PostgreSQL."
+  description = "Microsoft Entra ID principal that becomes an administrator of the server. Required when any database is owned by an Entra ID identity, because only an Entra administrator can create Entra principals inside PostgreSQL, and it has to be the identity the Azure CLI is logged in as while Terraform runs."
   type = object({
-    tenant_id      = string
     object_id      = string
     principal_name = string
     principal_type = optional(string, "User")
@@ -76,7 +80,7 @@ variable "entra_administrator" {
   default = null
 
   validation {
-    condition     = var.entra_administrator == null || contains(["User", "Group", "ServicePrincipal"], try(var.entra_administrator.principal_type, "User"))
+    condition     = contains(["User", "Group", "ServicePrincipal"], try(var.entra_administrator.principal_type, "User"))
     error_message = "entra_administrator.principal_type must be one of User, Group or ServicePrincipal."
   }
 }
@@ -122,7 +126,7 @@ variable "revoke_public_connect" {
 }
 
 variable "tags" {
-  description = "Tags applied to the server."
+  description = "Tags applied to the resource group and the server."
   type        = map(string)
   default     = {}
 }
