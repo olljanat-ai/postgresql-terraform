@@ -147,3 +147,60 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "key_vault_name" {
+  description = "Name of the Azure Key Vault the generated owner passwords are written to. Has to be globally unique. Leave it unset to skip the vault entirely, in which case the passwords are only available in the state and through the owner_passwords output."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.key_vault_name == null || can(regex("^[a-zA-Z][a-zA-Z0-9-]{1,22}[a-zA-Z0-9]$", var.key_vault_name))
+    error_message = "key_vault_name has to be 3 to 24 characters of letters, digits and dashes, start with a letter and not end with a dash."
+  }
+}
+
+variable "key_vault_sku_name" {
+  description = "SKU of the Key Vault, standard or premium."
+  type        = string
+  default     = "standard"
+
+  validation {
+    condition     = contains(["standard", "premium"], var.key_vault_sku_name)
+    error_message = "key_vault_sku_name must be either standard or premium."
+  }
+}
+
+variable "key_vault_soft_delete_retention_days" {
+  description = "Number of days a deleted vault and its secrets can still be recovered. Azure allows 7 to 90 and the value cannot be lowered later."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.key_vault_soft_delete_retention_days >= 7 && var.key_vault_soft_delete_retention_days <= 90
+    error_message = "key_vault_soft_delete_retention_days has to be between 7 and 90."
+  }
+}
+
+variable "key_vault_purge_protection_enabled" {
+  description = "Whether a deleted vault is kept for the whole soft delete retention period and cannot be purged before that. Turning it on cannot be undone, and it keeps terraform destroy from freeing the vault name, so it is off by default and belongs on anything that is not a throwaway environment."
+  type        = bool
+  default     = false
+}
+
+variable "key_vault_public_network_access_enabled" {
+  description = "Whether the vault is reachable from the public internet. Terraform writes the secrets over the data plane, so it needs network access to the vault."
+  type        = bool
+  default     = true
+}
+
+variable "key_vault_grant_deployer_access" {
+  description = "Create a Key Vault Secrets Officer role assignment on the vault for the identity Terraform runs as. Creating a vault grants no access to its secrets, so without this the secrets cannot be written. Turn it off when the access is granted outside of this configuration, for example because the identity Terraform runs as may not create role assignments."
+  type        = bool
+  default     = true
+}
+
+variable "key_vault_store_administrator_password" {
+  description = "Also store administrator_password in the vault, next to the generated owner passwords. It is not generated here, but keeping it with them makes the vault the single place holding the credentials of the server."
+  type        = bool
+  default     = true
+}

@@ -24,6 +24,25 @@ server_name         = "psql-prototype-0001"
 postgresql_version = "15"
 sku_name           = "B_Standard_B2s"
 
+# The generated owner passwords are written into this Key Vault, one secret per
+# database owner, named after the owner role. The name has to be globally unique
+# and it is created into the resource group above.
+#
+#   az keyvault secret show --vault-name kv-psql-prototype-0001 \
+#     --name orders-owner --query value -o tsv
+#
+# Terraform gives itself the Key Vault Secrets Officer role on the vault, which
+# needs the identity it runs as to be allowed to create role assignments (Owner
+# or User Access Administrator on the resource group or the subscription). Set
+# key_vault_grant_deployer_access = false when that access is arranged
+# elsewhere, or leave key_vault_name unset to skip the vault altogether.
+key_vault_name = "kv-psql-prototype-0001"
+
+# A throwaway environment is meant to be destroyable, and purge protection keeps
+# the vault, and its name, reserved for the whole soft delete retention period.
+key_vault_purge_protection_enabled   = false
+key_vault_soft_delete_retention_days = 7
+
 tags = {
   environment = "prototype"
   managed_by  = "terraform"
