@@ -33,6 +33,7 @@ resource "azurerm_postgresql_flexible_server" "this" {
   version             = var.postgresql_version
   sku_name            = var.sku_name
   storage_mb          = var.storage_mb
+  auto_grow_enabled   = true
 
   administrator_login    = var.administrator_login
   administrator_password = var.administrator_password
