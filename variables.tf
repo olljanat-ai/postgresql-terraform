@@ -42,6 +42,12 @@ variable "sku_name" {
   default     = "B_Standard_B2s"
 }
 
+variable "zone" {
+  description = "Availability zone the server is placed in. Pinning it keeps Azure from moving the server to another zone on a later apply."
+  type        = string
+  default     = "1"
+}
+
 variable "storage_mb" {
   description = "Storage allocated for the server, in megabytes."
   type        = number
@@ -82,7 +88,7 @@ variable "firewall_rules" {
 }
 
 variable "entra_administrator" {
-  description = "Microsoft Entra ID principal that becomes an administrator of the server. Required when any database is owned by an Entra ID identity, because only an Entra administrator can create Entra principals inside PostgreSQL, and it has to be the identity the Azure CLI is logged in as while Terraform runs."
+  description = "Microsoft Entra ID principal that becomes an administrator of the server. Required when any database is owned by an Entra ID identity. This has to be the very identity the Azure CLI is signed in as while Terraform runs: only an Entra administrator may create Entra principals, and only a token of the signed in identity can be requested, so a different identity here fails the apply. principal_name is the user principal name of a user and the display name of a group or a service principal."
   type = object({
     object_id      = string
     principal_name = string

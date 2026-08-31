@@ -31,6 +31,10 @@ tags = {
 
 # Terraform manages the databases and the roles over port 5432, so the address
 # it runs from has to be allowed in: curl -s https://api.ipify.org
+#
+# The range below is the whole internet. It is workable for a throwaway
+# prototype, where the address Terraform runs from is not known up front, but
+# narrow it to that address before this server holds anything real.
 firewall_rules = {
   terraform = {
     start_ip_address = "0.0.0.0"
@@ -38,10 +42,18 @@ firewall_rules = {
   }
 }
 
-# The identity the Azure CLI is logged in as while Terraform runs. Only an Entra
-# administrator of the server can create the Entra principals below.
+# The identity the Azure CLI is signed in as while Terraform runs, and nothing
+# else: only an Entra administrator can create the Entra principals below, and
+# only a token of the signed in identity can be requested for the connection.
+#
+# Signed in as a user (principal_name is the user principal name):
 #   az ad signed-in-user show --query id -o tsv
 #   az ad signed-in-user show --query userPrincipalName -o tsv
+#
+# Signed in as a service principal (principal_name is the display name, and
+# principal_type is ServicePrincipal):
+#   az ad sp show --id "$(az account show --query user.name -o tsv)" --query id -o tsv
+#   az ad sp show --id "$(az account show --query user.name -o tsv)" --query displayName -o tsv
 entra_administrator = {
   object_id      = "9fde82d2-92f3-47dc-bdb3-b07cd4d16b9c"
   principal_name = "psqladmin@olliaditrooutlook.onmicrosoft.com"
