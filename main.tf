@@ -37,6 +37,8 @@ resource "azurerm_postgresql_flexible_server" "this" {
 
   tags = var.tags
 
+  zone = "1"
+
   lifecycle {
     precondition {
       condition     = length(local.entra_databases) == 0 || var.entra_administrator != null

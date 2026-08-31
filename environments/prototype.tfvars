@@ -33,8 +33,8 @@ tags = {
 # it runs from has to be allowed in: curl -s https://api.ipify.org
 firewall_rules = {
   terraform = {
-    start_ip_address = "203.0.113.10"
-    end_ip_address   = "203.0.113.10"
+    start_ip_address = "0.0.0.0"
+    end_ip_address   = "255.255.255.255"
   }
 }
 
@@ -43,8 +43,8 @@ firewall_rules = {
 #   az ad signed-in-user show --query id -o tsv
 #   az ad signed-in-user show --query userPrincipalName -o tsv
 entra_administrator = {
-  object_id      = "11111111-1111-1111-1111-111111111111"
-  principal_name = "you@example.com"
+  object_id      = "9fde82d2-92f3-47dc-bdb3-b07cd4d16b9c"
+  principal_name = "psqladmin@olliaditrooutlook.onmicrosoft.com"
   principal_type = "User"
 }
 
@@ -68,7 +68,7 @@ databases = [
     name = "analytics"
     entra_principal = {
       name      = "sg-analytics-db-owners"
-      object_id = "22222222-2222-2222-2222-222222222222"
+      object_id = "f51ee4ed-6c2d-42ee-9ba7-a08814b047ec"
       type      = "group"
     }
   },
@@ -79,7 +79,7 @@ databases = [
     name = "reporting"
     entra_principal = {
       name      = "id-reporting"
-      object_id = "33333333-3333-3333-3333-333333333333"
+      object_id = "831b3ba3-03cc-4270-b7e6-5905683c847f"
       type      = "service"
     }
   },
