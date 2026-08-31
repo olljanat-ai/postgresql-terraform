@@ -152,7 +152,7 @@ variable "revoke_public_connect" {
 }
 
 variable "tags" {
-  description = "Tags applied to the resource group and the server."
+  description = "Tags applied to the resource group, the server and the vault."
   type        = map(string)
   default     = {}
 }
@@ -200,6 +200,28 @@ variable "key_vault_public_network_access_enabled" {
   description = "Whether the vault is reachable from the public internet. Terraform writes the secrets over the data plane, so it needs network access to the vault."
   type        = bool
   default     = true
+}
+
+variable "key_vault_network_acls" {
+  description = <<-EOT
+    Network ACL of the vault, or null for a vault that accepts every address its public network access allows.
+
+    Terraform writes the secrets over the data plane, so an ACL that denies by default has to list the address Terraform runs from in `ip_rules`.
+  EOT
+
+  type = object({
+    bypass                     = optional(string, "AzureServices")
+    default_action             = optional(string, "Deny")
+    ip_rules                   = optional(list(string), [])
+    virtual_network_subnet_ids = optional(list(string), [])
+  })
+  default = null
+}
+
+variable "key_vault_rbac_propagation_wait" {
+  description = "How long to wait after granting the deployer access to the vault before writing the first secret. A fresh role assignment takes a while to reach the data plane, and a secret written before it is there fails with \"Caller is not authorized to perform action on resource\"."
+  type        = string
+  default     = "60s"
 }
 
 variable "key_vault_grant_deployer_access" {

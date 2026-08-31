@@ -41,25 +41,27 @@ output "owner_passwords" {
 
 output "key_vault_id" {
   description = "Resource id of the Key Vault holding the passwords, or null when no vault is created."
-  value       = one(azurerm_key_vault.this[*].id)
+  value       = one(module.key_vault[*].resource_id)
 }
 
 output "key_vault_name" {
   description = "Name of the Key Vault holding the passwords, or null when no vault is created."
-  value       = one(azurerm_key_vault.this[*].name)
+  value       = one(module.key_vault[*].name)
 }
 
 output "key_vault_uri" {
   description = "Data plane URI of the Key Vault holding the passwords, or null when no vault is created."
-  value       = one(azurerm_key_vault.this[*].vault_uri)
+  value       = one(module.key_vault[*].uri)
 }
 
 output "owner_password_secrets" {
   description = "Name of the Key Vault secret holding the password of each database owner, keyed by database name. Empty when no vault is created."
-  value       = { for name, secret in azurerm_key_vault_secret.owner : name => secret.name }
+  value = local.key_vault_enabled ? {
+    for name, key in local.owner_secret_keys : name => module.key_vault[0].secrets_resource_ids[key].name
+  } : {}
 }
 
 output "administrator_password_secret" {
   description = "Name of the Key Vault secret holding the administrator password, or null when it is not stored in the vault."
-  value       = one(azurerm_key_vault_secret.administrator[*].name)
+  value = local.key_vault_enabled && var.key_vault_store_administrator_password ? module.key_vault[0].secrets_resource_ids["administrator"].name : null
 }

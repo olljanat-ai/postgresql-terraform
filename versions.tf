@@ -24,10 +24,6 @@ terraform {
       source  = "hashicorp/random"
       version = ">= 3.5"
     }
-    time = {
-      source  = "hashicorp/time"
-      version = ">= 0.9"
-    }
   }
 
   # The state holds the generated owner passwords in cleartext even when they
@@ -50,7 +46,8 @@ provider "azurerm" {
 
 # The AVM modules pull in azapi, either directly or through the shared AVM
 # interface module, so it is configured against the same subscription as
-# azurerm instead of being left to fall back to the Azure CLI default.
+# azurerm instead of being left to fall back to the Azure CLI default. The time
+# provider is gone: the Key Vault module owns the RBAC propagation wait now.
 provider "azapi" {
   subscription_id = var.subscription_id
 }
