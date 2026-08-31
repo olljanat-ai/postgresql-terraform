@@ -112,6 +112,26 @@ administrator of the server, so the configuration calls them over `psql` with an
 access token from `az account get-access-token`. An environment without
 `entra_principal` databases needs neither tool.
 
+### `entra_administrator` has to be the identity you run Terraform as
+
+Not merely an administrator of the server, but the exact identity the Azure CLI
+is signed in as. Two things pin it down: only an Entra administrator may create
+Entra principals, and `az account get-access-token` can only return a token for
+the identity that is signed in. PostgreSQL also refuses a token whose type does
+not match the role it is presented for, so pointing `entra_administrator` at a
+user while running as a service principal fails the apply with
+
+```
+FATAL: Microsoft Entra user token for role "..." is neither an
+AAD_AUTH_TOKENTYPE_APP_USER or an AAD_AUTH_TOKENTYPE_APP_OBO token.
+```
+
+The configuration checks this before connecting and says which identity is
+signed in and which one is configured. Fill the input in from the identity you
+actually run as — `az ad signed-in-user show` for a user, `az ad sp show` for a
+service principal, whose `principal_name` is its display name rather than its
+application id. `environments/prototype.tfvars` carries both command pairs.
+
 ## Inputs
 
 | Name                            | Description                                                                             | Type           | Default             | Required |
@@ -125,6 +145,7 @@ access token from `az account get-access-token`. An environment without
 | `location`                      | Azure region.                                                                           | `string`       | `"swedencentral"`   |    no    |
 | `postgresql_version`            | Major PostgreSQL version, 15 or newer.                                                  | `string`       | `"15"`              |    no    |
 | `sku_name`                      | Server SKU.                                                                             | `string`       | `"B_Standard_B2s"`  |    no    |
+| `zone`                          | Availability zone the server is placed in.                                              | `string`       | `"1"`               |    no    |
 | `storage_mb`                    | Storage in megabytes.                                                                   | `number`       | `32768`             |    no    |
 | `backup_retention_days`         | Days backups are kept.                                                                  | `number`       | `7`                 |    no    |
 | `administrator_login`           | Login of the built-in administrator.                                                    | `string`       | `"pgadmin"`         |    no    |

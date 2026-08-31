@@ -35,9 +35,9 @@ resource "azurerm_postgresql_flexible_server" "this" {
     tenant_id                     = local.entra_auth_enabled ? data.azurerm_client_config.current.tenant_id : null
   }
 
-  tags = var.tags
+  zone = var.zone
 
-  zone = "1"
+  tags = var.tags
 
   lifecycle {
     precondition {
@@ -149,18 +149,44 @@ resource "terraform_data" "entra_principal" {
     interpreter = ["/bin/bash", "-c"]
 
     environment = {
-      PGHOST         = azurerm_postgresql_flexible_server.this.fqdn
-      PGUSER         = var.entra_administrator.principal_name
-      PGDATABASE     = "postgres"
-      PGSSLMODE      = "require"
-      ADMINISTRATOR  = var.administrator_login
-      PRINCIPAL_NAME = each.value.entra_principal.name
-      PRINCIPAL_OID  = each.value.entra_principal.object_id
-      PRINCIPAL_TYPE = each.value.entra_principal.type
+      PGHOST              = azurerm_postgresql_flexible_server.this.fqdn
+      PGUSER              = var.entra_administrator.principal_name
+      PGDATABASE          = "postgres"
+      PGSSLMODE           = "require"
+      ENTRA_ADMINISTRATOR = var.entra_administrator.principal_name
+      ADMINISTRATOR       = var.administrator_login
+      PRINCIPAL_NAME      = each.value.entra_principal.name
+      PRINCIPAL_OID       = each.value.entra_principal.object_id
+      PRINCIPAL_TYPE      = each.value.entra_principal.type
     }
 
     command = <<-EOT
       set -euo pipefail
+
+      # Only a token of the identity the Azure CLI is signed in as can be
+      # requested here, and PostgreSQL rejects a token whose type does not match
+      # the role it is presented for, with "is neither an
+      # AAD_AUTH_TOKENTYPE_APP_USER or an AAD_AUTH_TOKENTYPE_APP_OBO token".
+      # So the signed in identity has to be the Entra administrator itself.
+      if ! signed_in_type="$(az account show --query user.type --output tsv 2>/dev/null)"; then
+        echo "The Azure CLI is not signed in. Run: az login" >&2
+        exit 1
+      fi
+
+      signed_in_name="$(az account show --query user.name --output tsv)"
+      if [ "$signed_in_type" = "servicePrincipal" ]; then
+        # A service principal signs in with its application id, but PostgreSQL
+        # knows it by its display name.
+        signed_in_name="$(az ad sp show --id "$signed_in_name" \
+          --query displayName --output tsv 2>/dev/null || echo "$signed_in_name")"
+      fi
+
+      if [ "$signed_in_name" != "$ENTRA_ADMINISTRATOR" ]; then
+        echo "The Azure CLI is signed in as '$signed_in_name' ($signed_in_type), but the Entra administrator of the server is '$ENTRA_ADMINISTRATOR'." >&2
+        echo "Only an Entra administrator may create Entra principals, and only a token of the signed in identity can be requested here, so the two have to be the same identity." >&2
+        echo "Either sign in as '$ENTRA_ADMINISTRATOR', or point entra_administrator at the identity Terraform runs as." >&2
+        exit 1
+      fi
 
       PGPASSWORD="$(az account get-access-token \
         --resource https://ossrdbms-aad.database.windows.net \
