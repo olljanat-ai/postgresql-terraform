@@ -35,6 +35,10 @@ resource "azurerm_postgresql_flexible_server" "this" {
   storage_mb          = var.storage_mb
   auto_grow_enabled   = true
 
+  high_availability {
+    mode = "ZoneRedundant"
+  }
+
   administrator_login    = var.administrator_login
   administrator_password = var.administrator_password
 
