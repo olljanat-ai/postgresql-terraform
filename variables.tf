@@ -14,6 +14,12 @@ variable "location" {
   default     = "swedencentral"
 }
 
+variable "enable_telemetry" {
+  description = "Whether the Azure Verified Modules report their usage to Microsoft. The modules do it by attaching a deployment with a module specific identifier to the subscription, which carries no data about the resources themselves. See https://aka.ms/avm/telemetryinfo."
+  type        = bool
+  default     = true
+}
+
 variable "server_name" {
   description = "Name of the Azure Database for PostgreSQL flexible server. Has to be globally unique."
   type        = string
@@ -46,6 +52,37 @@ variable "zone" {
   description = "Availability zone the server is placed in. Pinning it keeps Azure from moving the server to another zone on a later apply."
   type        = string
   default     = "1"
+}
+
+variable "high_availability" {
+  description = <<-EOT
+    High availability of the server, or null for a server without a standby.
+
+    Not every SKU and region offers it: the burstable SKUs, the `B_` prefixed ones, offer none, so a server on those has to set this to null.
+  EOT
+
+  type = object({
+    mode                      = string
+    standby_availability_zone = optional(string)
+  })
+  default = {
+    mode = "ZoneRedundant"
+  }
+
+  validation {
+    condition     = var.high_availability == null || contains(["SameZone", "ZoneRedundant"], try(var.high_availability.mode, ""))
+    error_message = "high_availability.mode has to be either SameZone or ZoneRedundant."
+  }
+}
+
+variable "maintenance_window" {
+  description = "Window Azure applies its maintenance in, or null to let Azure schedule it. `day_of_week` runs from 0, Sunday, to 6, and the start time is in UTC."
+  type = object({
+    day_of_week  = optional(string)
+    start_hour   = optional(number)
+    start_minute = optional(number)
+  })
+  default = null
 }
 
 variable "storage_mb" {

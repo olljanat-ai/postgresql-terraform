@@ -1,21 +1,21 @@
 output "resource_group_name" {
   description = "Name of the resource group."
-  value       = azurerm_resource_group.this.name
+  value       = module.resource_group.name
 }
 
 output "server_id" {
   description = "Resource id of the PostgreSQL flexible server."
-  value       = azurerm_postgresql_flexible_server.this.id
+  value       = module.postgresql_server.resource_id
 }
 
 output "server_name" {
   description = "Name of the PostgreSQL flexible server."
-  value       = azurerm_postgresql_flexible_server.this.name
+  value       = module.postgresql_server.name
 }
 
 output "fqdn" {
   description = "Host name of the PostgreSQL flexible server."
-  value       = azurerm_postgresql_flexible_server.this.fqdn
+  value       = module.postgresql_server.fqdn
 }
 
 output "administrator_login" {
