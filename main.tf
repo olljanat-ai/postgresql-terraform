@@ -113,13 +113,6 @@ resource "postgresql_database" "this" {
   lc_ctype   = each.value.collation
 }
 
-# The databases used to be split between password authenticated and Entra ID
-# owners; only the password case is left, so the resource lost its suffix.
-moved {
-  from = postgresql_database.password
-  to   = postgresql_database.this
-}
-
 ################################################################################
 # Hardening
 ################################################################################
