@@ -55,10 +55,9 @@ module "postgresql" {
 }
 ```
 
-Complete, runnable examples:
-
-* [`examples/password-auth`](examples/password-auth) — username and password owners.
-* [`examples/entra-id`](examples/entra-id) — Entra ID owners.
+[`environments/prototype`](environments/prototype) is a complete, runnable
+environment that calls this module directly and puts both kinds of database on
+the same server.
 
 ## How the isolation works
 
@@ -81,8 +80,8 @@ Complete, runnable examples:
 | [hashicorp/random](https://registry.terraform.io/providers/hashicorp/random)               | >= 3.5    |
 
 The `postgresql` provider is configured by the caller, not by the module, and it
-has to be able to reach the server on port 5432 while Terraform runs. Both
-examples show how to do that.
+has to be able to reach the server on port 5432 while Terraform runs. The
+prototype environment shows how to do that.
 
 Databases owned by an Entra ID identity additionally need `psql` and the Azure
 CLI on the machine running Terraform. Azure only exposes the creation of Entra

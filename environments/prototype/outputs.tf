@@ -4,12 +4,12 @@ output "fqdn" {
 }
 
 output "databases" {
-  description = "Created databases and their owners."
+  description = "Created databases, their owner and how that owner authenticates."
   value       = module.postgresql.databases
 }
 
 output "owner_passwords" {
-  description = "Generated passwords of the database owners. Read with: terraform output -json owner_passwords"
+  description = "Generated passwords of the password authenticated owners. Read with: terraform output -json owner_passwords"
   value       = module.postgresql.owner_passwords
   sensitive   = true
 }
