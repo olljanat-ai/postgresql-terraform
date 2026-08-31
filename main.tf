@@ -132,7 +132,9 @@ resource "postgresql_database" "password" {
 # Terraform can hand the ownership of the database over to it and keep managing
 # the privileges of the database afterwards.
 resource "terraform_data" "entra_principal" {
-  for_each = local.entra_databases
+  # Guarded so that a missing entra_administrator is reported by the
+  # precondition of the server instead of as a null attribute error here.
+  for_each = local.entra_auth_enabled ? local.entra_databases : {}
 
   triggers_replace = {
     server         = azurerm_postgresql_flexible_server.this.id

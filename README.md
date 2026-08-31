@@ -135,3 +135,13 @@ databases do not need either tool.
 | `administrator_password` | Password of the built-in administrator (sensitive).                            |
 | `databases`              | Databases, their owner and how that owner authenticates.                       |
 | `owner_passwords`        | Generated owner passwords, per database, for the password case (sensitive).    |
+
+## Notes
+
+* An Entra principal is created inside PostgreSQL when the database is first
+  created and is not removed when the database is destroyed. Renaming an
+  `entra_principal` creates the new principal and leaves the old one in place;
+  drop it with `DROP ROLE` if it is no longer wanted.
+* Owner passwords are stored in the Terraform state. Keep the state in a
+  backend that encrypts it, or use Entra ID owners, which have no password at
+  all.
