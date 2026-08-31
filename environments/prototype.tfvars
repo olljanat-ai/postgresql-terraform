@@ -23,6 +23,11 @@ server_name         = "psql-prototype-0001"
 postgresql_version = "15"
 sku_name           = "B_Standard_B2s"
 
+# The burstable SKU above offers no high availability, so there is no standby.
+# A server on a General Purpose or Memory Optimized SKU can drop this line and
+# take the ZoneRedundant standby the module defaults to.
+high_availability = null
+
 # The generated owner passwords are written into this Key Vault, one secret per
 # database owner, named after the owner role. The name has to be globally unique
 # and it is created into the resource group above.
