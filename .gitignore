@@ -16,6 +16,10 @@ crash.*.log
 *.tfvars
 *.tfvars.json
 
+# Environment files are the inputs of this configuration and carry no secrets,
+# the administrator password is passed through TF_VAR_administrator_password.
+!environments/*.tfvars
+
 # Ignore override files as they are usually used to override resources locally and so
 # are not checked in
 override.tf
@@ -42,7 +46,3 @@ terraform.rc
 # Optional: ignore plan files saved before destroying Terraform configuration
 # Uncomment the line below if you want to ignore planout files.
 # planout
-
-# The repository root is a reusable module, its lock file is not used by
-# consumers. The lock file of an environment is committed as usual.
-/.terraform.lock.hcl

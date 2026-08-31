@@ -4,28 +4,27 @@ locals {
   entra_databases    = { for name, db in local.databases : name => db if db.entra_principal != null }
 
   entra_auth_enabled = var.entra_administrator != null
-
-  administrator_password = coalesce(var.administrator_password, one(random_password.administrator[*].result))
 }
 
-resource "random_password" "administrator" {
-  count = var.administrator_password == null ? 1 : 0
+data "azurerm_client_config" "current" {}
 
-  length           = 32
-  special          = true
-  override_special = "!#%&*()-_=+[]<>:?"
+resource "azurerm_resource_group" "this" {
+  name     = var.resource_group_name
+  location = var.location
+
+  tags = var.tags
 }
 
 resource "azurerm_postgresql_flexible_server" "this" {
-  name                = var.name
-  resource_group_name = var.resource_group_name
-  location            = var.location
+  name                = var.server_name
+  resource_group_name = azurerm_resource_group.this.name
+  location            = azurerm_resource_group.this.location
   version             = var.postgresql_version
   sku_name            = var.sku_name
   storage_mb          = var.storage_mb
 
   administrator_login    = var.administrator_login
-  administrator_password = local.administrator_password
+  administrator_password = var.administrator_password
 
   backup_retention_days         = var.backup_retention_days
   public_network_access_enabled = var.public_network_access_enabled
@@ -33,7 +32,7 @@ resource "azurerm_postgresql_flexible_server" "this" {
   authentication {
     password_auth_enabled         = true
     active_directory_auth_enabled = local.entra_auth_enabled
-    tenant_id                     = local.entra_auth_enabled ? var.entra_administrator.tenant_id : null
+    tenant_id                     = local.entra_auth_enabled ? data.azurerm_client_config.current.tenant_id : null
   }
 
   tags = var.tags
@@ -59,8 +58,8 @@ resource "azurerm_postgresql_flexible_server_active_directory_administrator" "th
   count = local.entra_auth_enabled ? 1 : 0
 
   server_name         = azurerm_postgresql_flexible_server.this.name
-  resource_group_name = var.resource_group_name
-  tenant_id           = var.entra_administrator.tenant_id
+  resource_group_name = azurerm_resource_group.this.name
+  tenant_id           = data.azurerm_client_config.current.tenant_id
   object_id           = var.entra_administrator.object_id
   principal_name      = var.entra_administrator.principal_name
   principal_type      = var.entra_administrator.principal_type

@@ -1,3 +1,8 @@
+output "resource_group_name" {
+  description = "Name of the resource group."
+  value       = azurerm_resource_group.this.name
+}
+
 output "server_id" {
   description = "Resource id of the PostgreSQL flexible server."
   value       = azurerm_postgresql_flexible_server.this.id
@@ -9,19 +14,13 @@ output "server_name" {
 }
 
 output "fqdn" {
-  description = "Fully qualified domain name of the PostgreSQL flexible server."
+  description = "Host name of the PostgreSQL flexible server."
   value       = azurerm_postgresql_flexible_server.this.fqdn
 }
 
 output "administrator_login" {
   description = "Login of the built-in PostgreSQL administrator."
   value       = var.administrator_login
-}
-
-output "administrator_password" {
-  description = "Password of the built-in PostgreSQL administrator."
-  value       = local.administrator_password
-  sensitive   = true
 }
 
 output "databases" {
