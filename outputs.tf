@@ -63,5 +63,5 @@ output "owner_password_secrets" {
 
 output "administrator_password_secret" {
   description = "Name of the Key Vault secret holding the administrator password, or null when it is not stored in the vault."
-  value = local.key_vault_enabled && var.key_vault_store_administrator_password ? module.key_vault[0].secrets_resource_ids["administrator"].name : null
+  value       = local.key_vault_enabled && var.key_vault_store_administrator_password ? module.key_vault[0].secrets_resource_ids["administrator"].name : null
 }
