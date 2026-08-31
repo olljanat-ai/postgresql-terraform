@@ -109,7 +109,7 @@ variable "databases" {
   validation {
     condition = alltrue([
       for db in var.databases :
-      db.entra_principal == null || contains(["user", "group", "service"], db.entra_principal.type)
+      contains(["user", "group", "service"], try(db.entra_principal.type, "user"))
     ])
     error_message = "databases[*].entra_principal.type must be one of user, group or service."
   }
