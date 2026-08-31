@@ -91,8 +91,26 @@ resource "postgresql_role" "owner" {
   ]
 }
 
+# The administrator is not a superuser on Azure, so it can only create a
+# database owned by another role, and later revoke privileges on it, while it is
+# a member of that role. The membership is granted before the database is
+# created, which also makes the provider skip the temporary grant it would
+# otherwise revoke right after the database is created.
+resource "postgresql_grant_role" "owner_to_administrator" {
+  for_each = local.password_databases
+
+  role       = var.administrator_login
+  grant_role = postgresql_role.owner[each.key].name
+
+  # The administrator created the role, so it is already its grantor and cannot
+  # be granted the admin option back.
+  with_admin_option = false
+}
+
 resource "postgresql_database" "password" {
   for_each = local.password_databases
+
+  depends_on = [postgresql_grant_role.owner_to_administrator]
 
   name       = each.key
   owner      = postgresql_role.owner[each.key].name
@@ -110,8 +128,9 @@ resource "postgresql_database" "password" {
 # security label that Azure uses to map the Entra token to the role. There is no
 # Terraform resource for them, so they are created with the pgaadauth helper
 # function, connecting as the Entra administrator of the server. The role is
-# then granted to the built-in administrator, so that Terraform can hand the
-# ownership of the database over to it.
+# then granted to the built-in administrator with the admin option, so that
+# Terraform can hand the ownership of the database over to it and keep managing
+# the privileges of the database afterwards.
 resource "terraform_data" "entra_principal" {
   for_each = local.entra_databases
 
@@ -154,7 +173,7 @@ resource "terraform_data" "entra_principal" {
         SELECT pgaadauth_create_principal_with_oid(:'principal', :'oid', :'type', false, false)
         WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'principal');
 
-        GRANT :"principal" TO :"administrator";
+        GRANT :"principal" TO :"administrator" WITH ADMIN OPTION;
       SQL
     EOT
   }
@@ -196,5 +215,6 @@ resource "postgresql_grant" "revoke_public_connect" {
   depends_on = [
     postgresql_database.password,
     postgresql_database.entra,
+    postgresql_grant_role.owner_to_administrator,
   ]
 }
