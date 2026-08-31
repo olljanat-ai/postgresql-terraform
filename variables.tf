@@ -20,9 +20,20 @@ variable "server_name" {
 }
 
 variable "postgresql_version" {
-  description = "Major PostgreSQL version. Version 16 or newer is recommended: from 16 onwards the public schema is owned by pg_database_owner, so a database owner automatically has full rights on it."
+  description = "Major PostgreSQL version. Not every version is offered for every SKU and region, check with: az postgres flexible-server list-skus --location <region>"
   type        = string
   default     = "15"
+
+  validation {
+    # From PostgreSQL 15 onwards the public schema is owned by
+    # pg_database_owner and PUBLIC no longer has CREATE on it, which is what
+    # makes a database owner have full rights on its own database, and only on
+    # that one, without any further grants. On older versions public is owned by
+    # the bootstrap superuser and is writable by everybody, so the isolation
+    # this configuration promises would not hold.
+    condition     = tonumber(var.postgresql_version) >= 15
+    error_message = "postgresql_version has to be 15 or newer: on older versions the public schema is writable by every role, so the databases would not be isolated from each other."
+  }
 }
 
 variable "sku_name" {
