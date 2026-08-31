@@ -4,13 +4,7 @@ Terraform configuration that creates an Azure Database for PostgreSQL flexible
 server and a list of databases on it. Every database gets its own owner, which
 has full permissions on that database and no access to the other ones.
 
-An owner is either
-
-* a PostgreSQL role with a username and a generated password, or
-* a Microsoft Entra ID identity (user, group or managed identity), which
-  connects with an Entra access token instead of a password.
-
-The two cases can be mixed on the same server, the choice is made per database.
+An owner is a PostgreSQL role with a username and a generated password.
 
 The generated owner passwords are written into an Azure Key Vault, so that the
 applications using the databases have somewhere to read them from that is not
@@ -28,10 +22,6 @@ environments/prototype.tfvars                    the prototype environment
 
 ## Usage
 
-The Azure CLI has to be logged in as the identity given in
-`entra_administrator`, because only an Entra administrator of the server can
-create Entra principals inside PostgreSQL.
-
 ```bash
 az login
 
@@ -41,10 +31,9 @@ terraform init
 terraform apply -var-file=environments/prototype.tfvars
 ```
 
-Edit `environments/prototype.tfvars` first: it ships with placeholder
-subscription, address and Entra object ids, and it holds no secrets. Adding
-another environment means adding another `.tfvars` file next to it, nothing
-else.
+Edit `environments/prototype.tfvars` first: it ships with a placeholder
+subscription and address, and it holds no secrets. Adding another environment
+means adding another `.tfvars` file next to it, nothing else.
 
 Read the generated owner passwords afterwards, either from the Key Vault:
 
@@ -62,16 +51,14 @@ terraform output -json owner_passwords
 
 ### The prototype environment
 
-| Database    | Owner                | Authentication      |
-| ----------- | -------------------- | ------------------- |
-| `orders`    | `orders_owner`       | username + password |
-| `billing`   | `billing_app`        | username + password |
-| `analytics` | An Entra ID group    | Entra ID            |
-| `reporting` | A managed identity   | Entra ID            |
+| Database    | Owner           |
+| ----------- | --------------- |
+| `orders`    | `orders_owner`  |
+| `billing`   | `billing_app`   |
+| `analytics` | `analytics_owner` |
+| `reporting` | `reporting_owner` |
 
 ### Connecting
-
-As a password authenticated owner:
 
 ```bash
 PGPASSWORD="$(az keyvault secret show \
@@ -79,19 +66,6 @@ PGPASSWORD="$(az keyvault secret show \
   --name orders-owner --query value -o tsv)" \
   psql "host=$(terraform output -raw fqdn) user=orders_owner dbname=orders sslmode=require"
 ```
-
-As an Entra ID identity, where the access token is the password:
-
-```bash
-export PGPASSWORD="$(az account get-access-token \
-  --resource https://ossrdbms-aad.database.windows.net \
-  --query accessToken -o tsv)"
-
-psql "host=$(terraform output -raw fqdn) user=sg-analytics-db-owners dbname=analytics sslmode=require"
-```
-
-A workload using its managed identity requests the same token from the instance
-metadata endpoint instead of the Azure CLI.
 
 ## How the isolation works
 
@@ -109,9 +83,9 @@ metadata endpoint instead of the Azure CLI.
 ## Where the passwords are kept
 
 Setting `key_vault_name` creates a Key Vault into the same resource group and
-writes one secret per password authenticated database owner into it, named after
-the owner role with the underscores turned into dashes, because a Key Vault
-secret name may only carry letters, digits and dashes:
+writes one secret per database owner into it, named after the owner role with
+the underscores turned into dashes, because a Key Vault secret name may only
+carry letters, digits and dashes:
 
 | Database  | Owner role     | Secret         |
 | --------- | -------------- | -------------- |
@@ -121,8 +95,7 @@ secret name may only carry letters, digits and dashes:
 The administrator password goes in as well, under `administrator_login`
 (`pgadmin` by default), unless `key_vault_store_administrator_password` is turned
 off. `terraform output owner_password_secrets` maps every database to the name of
-its secret. Databases owned by an Entra ID identity have no password and no
-secret.
+its secret.
 
 The vault uses Azure RBAC rather than the legacy access policies, and creating a
 vault grants no access to the secrets inside it. Terraform therefore assigns
@@ -154,32 +127,16 @@ Terraform manages the databases and the roles over port 5432, so the machine it
 runs from needs network access to the server and a firewall rule allowing its
 address.
 
-Databases owned by an Entra ID identity additionally need `psql` and the Azure
-CLI on that machine. Azure only exposes the creation of Entra principals through
-the `pgaadauth` SQL functions, and those may only be called by an Entra
-administrator of the server, so the configuration calls them over `psql` with an
-access token from `az account get-access-token`. An environment without
-`entra_principal` databases needs neither tool.
+## Microsoft Entra ID
 
-### `entra_administrator` has to be the identity you run Terraform as
-
-Not merely an administrator of the server, but the exact identity the Azure CLI
-is signed in as. Two things pin it down: only an Entra administrator may create
-Entra principals, and `az account get-access-token` can only return a token for
-the identity that is signed in. PostgreSQL also refuses a token whose type does
-not match the role it is presented for, so pointing `entra_administrator` at a
-user while running as a service principal fails the apply with
-
-```
-FATAL: Microsoft Entra user token for role "..." is neither an
-AAD_AUTH_TOKENTYPE_APP_USER or an AAD_AUTH_TOKENTYPE_APP_OBO token.
-```
-
-The configuration checks this before connecting and says which identity is
-signed in and which one is configured. Fill the input in from the identity you
-actually run as — `az ad signed-in-user show` for a user, `az ad sp show` for a
-service principal, whose `principal_name` is its display name rather than its
-application id. `environments/prototype.tfvars` carries both command pairs.
+Not supported. The server is created with Entra authentication turned off and
+password authentication on, and every database owner is a password
+authenticated role. Entra ID owners were part of an earlier revision and were
+dropped because the credentials never worked reliably: Azure only exposes the
+creation of Entra principals through the `pgaadauth` SQL functions, those may
+only be called by an Entra administrator of the server, and only a token of the
+identity the Azure CLI is signed in as can be requested, which pinned the
+Terraform runner to that one identity.
 
 ## Inputs
 
@@ -189,8 +146,7 @@ application id. `environments/prototype.tfvars` carries both command pairs.
 | `resource_group_name`           | Resource group, created by this configuration.                                          | `string`       | n/a                 |   yes    |
 | `server_name`                   | Name of the flexible server.                                                            | `string`       | n/a                 |   yes    |
 | `administrator_password`        | Password of the built-in administrator. Pass as `TF_VAR_administrator_password`.        | `string`       | n/a                 |   yes    |
-| `databases`                     | Databases to create and how their owner authenticates. See below.                       | `list(object)` | `[]`                |    no    |
-| `entra_administrator`           | Entra principal that becomes an administrator of the server. Required for Entra owners. | `object`       | `null`              |    no    |
+| `databases`                     | Databases to create and the name of their owner role. See below.                        | `list(object)` | `[]`                |    no    |
 | `location`                      | Azure region.                                                                           | `string`       | `"swedencentral"`   |    no    |
 | `postgresql_version`            | Major PostgreSQL version, 15 or newer.                                                  | `string`       | `"15"`              |    no    |
 | `sku_name`                      | Server SKU.                                                                             | `string`       | `"B_Standard_B2s"`  |    no    |
@@ -212,16 +168,12 @@ application id. `environments/prototype.tfvars` carries both command pairs.
 
 ### `databases`
 
-| Field                       | Description                                                                               | Default          |
-| --------------------------- | ----------------------------------------------------------------------------------------- | ---------------- |
-| `name`                      | Database name.                                                                            | n/a              |
-| `charset`                   | Database encoding.                                                                        | `"UTF8"`         |
-| `collation`                 | Database collation.                                                                       | `"en_US.utf8"`   |
-| `owner_username`            | Name of the password authenticated owner role.                                            | `"<name>_owner"` |
-| `entra_principal`           | Set this to make an Entra ID identity the owner instead of a password authenticated role. | `null`           |
-| `entra_principal.name`      | User principal name of a user, or display name of a group or a managed identity.          | n/a              |
-| `entra_principal.object_id` | Entra object id of the identity.                                                          | n/a              |
-| `entra_principal.type`      | `user`, `group` or `service`.                                                             | `"user"`         |
+| Field            | Description                            | Default          |
+| ---------------- | -------------------------------------- | ---------------- |
+| `name`           | Database name.                         | n/a              |
+| `charset`        | Database encoding.                     | `"UTF8"`         |
+| `collation`      | Database collation.                    | `"en_US.utf8"`   |
+| `owner_username` | Name of the owner role.                | `"<name>_owner"` |
 
 ## Outputs
 
@@ -232,8 +184,8 @@ application id. `environments/prototype.tfvars` carries both command pairs.
 | `server_name`         | Name of the server.                                                         |
 | `fqdn`                | Host name of the server.                                                    |
 | `administrator_login` | Login of the built-in administrator.                                        |
-| `databases`           | Databases, their owner and how that owner authenticates.                    |
-| `owner_passwords`     | Generated owner passwords, per database, for the password case (sensitive). |
+| `databases`           | Databases and their owner role.                                             |
+| `owner_passwords`     | Generated owner passwords, per database (sensitive).                        |
 | `key_vault_id`        | Resource id of the Key Vault, `null` when no vault is created.              |
 | `key_vault_name`      | Name of the Key Vault, `null` when no vault is created.                     |
 | `key_vault_uri`       | Data plane URI of the Key Vault, `null` when no vault is created.           |
@@ -249,13 +201,8 @@ application id. `environments/prototype.tfvars` carries both command pairs.
   with `az postgres flexible-server list-skus --location <region> --output
   table`, and pin `location`, `sku_name` and `postgresql_version` in the
   environment file.
-* An Entra principal is created inside PostgreSQL when the database is first
-  created and is not removed when the database is destroyed. Renaming an
-  `entra_principal` creates the new principal and leaves the old one in place;
-  drop it with `DROP ROLE` if it is no longer wanted.
 * Owner passwords are stored in the Terraform state as well, the Key Vault does
-  not change that. Keep the state in a backend that encrypts it, or use Entra ID
-  owners, which have no password at all.
+  not change that. Keep the state in a backend that encrypts it.
 * Rotating an owner password means tainting its `random_password.owner` entry;
   the new value is written over the existing secret as a new version, and the
   previous versions stay in the vault until the secret is deleted.
