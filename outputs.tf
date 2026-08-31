@@ -43,3 +43,28 @@ output "owner_passwords" {
   value       = { for name, password in random_password.owner : name => password.result }
   sensitive   = true
 }
+
+output "key_vault_id" {
+  description = "Resource id of the Key Vault holding the passwords, or null when no vault is created."
+  value       = one(azurerm_key_vault.this[*].id)
+}
+
+output "key_vault_name" {
+  description = "Name of the Key Vault holding the passwords, or null when no vault is created."
+  value       = one(azurerm_key_vault.this[*].name)
+}
+
+output "key_vault_uri" {
+  description = "Data plane URI of the Key Vault holding the passwords, or null when no vault is created."
+  value       = one(azurerm_key_vault.this[*].vault_uri)
+}
+
+output "owner_password_secrets" {
+  description = "Name of the Key Vault secret holding the password of each database owner, keyed by database name. Empty when no vault is created."
+  value       = { for name, secret in azurerm_key_vault_secret.owner : name => secret.name }
+}
+
+output "administrator_password_secret" {
+  description = "Name of the Key Vault secret holding the administrator password, or null when it is not stored in the vault."
+  value       = one(azurerm_key_vault_secret.administrator[*].name)
+}

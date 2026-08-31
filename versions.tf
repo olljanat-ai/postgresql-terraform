@@ -14,10 +14,15 @@ terraform {
       source  = "hashicorp/random"
       version = ">= 3.5"
     }
+    time = {
+      source  = "hashicorp/time"
+      version = ">= 0.9"
+    }
   }
 
-  # The state holds the generated owner passwords, so anything that outlives a
-  # single laptop belongs in a remote backend.
+  # The state holds the generated owner passwords in cleartext even when they
+  # are also written to the Key Vault, so anything that outlives a single laptop
+  # belongs in a remote backend.
   #
   # backend "azurerm" {
   #   resource_group_name  = "rg-tfstate"
