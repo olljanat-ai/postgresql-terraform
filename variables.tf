@@ -11,7 +11,7 @@ variable "resource_group_name" {
 variable "location" {
   description = "Azure region."
   type        = string
-  default     = "westeurope"
+  default     = "swedencentral"
 }
 
 variable "server_name" {
@@ -22,13 +22,13 @@ variable "server_name" {
 variable "postgresql_version" {
   description = "Major PostgreSQL version. Version 16 or newer is recommended: from 16 onwards the public schema is owned by pg_database_owner, so a database owner automatically has full rights on it."
   type        = string
-  default     = "16"
+  default     = "15"
 }
 
 variable "sku_name" {
   description = "SKU of the server, for example B_Standard_B1ms or GP_Standard_D2s_v3."
   type        = string
-  default     = "B_Standard_B1ms"
+  default     = "B_Standard_B2s"
 }
 
 variable "storage_mb" {

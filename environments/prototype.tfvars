@@ -10,7 +10,7 @@
 #
 #   export TF_VAR_administrator_password="$(openssl rand -base64 24)"
 
-subscription_id     = "00000000-0000-0000-0000-000000000000"
+subscription_id     = "b03f3a19-0547-4c63-a440-ae049cdc2889"
 resource_group_name = "rg-postgresql-prototype"
 location            = "westeurope"
 server_name         = "psql-prototype-0001"
