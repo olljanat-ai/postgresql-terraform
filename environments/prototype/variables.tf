@@ -1,12 +1,12 @@
 variable "subscription_id" {
-  description = "Azure subscription the resources are created into."
+  description = "Azure subscription the prototype is created into."
   type        = string
 }
 
 variable "resource_group_name" {
-  description = "Name of the resource group created by this example."
+  description = "Name of the resource group created by this environment."
   type        = string
-  default     = "rg-postgresql-entra-id"
+  default     = "rg-postgresql-prototype"
 }
 
 variable "location" {
@@ -21,19 +21,19 @@ variable "server_name" {
 }
 
 variable "administrator_login" {
-  description = "Login of the built-in PostgreSQL administrator. Terraform uses it to create the databases, the application identities do not need it."
+  description = "Login of the built-in PostgreSQL administrator. Terraform uses it to create the databases and their owners."
   type        = string
   default     = "pgadmin"
 }
 
 variable "administrator_password" {
-  description = "Password of the built-in PostgreSQL administrator."
+  description = "Password of the built-in PostgreSQL administrator. It is passed in instead of being generated, so that the postgresql provider can be configured before the server exists."
   type        = string
   sensitive   = true
 }
 
 variable "client_ip_address" {
-  description = "Public IP address Terraform runs from."
+  description = "Public IP address Terraform runs from. It is allowed through the server firewall so that the databases and the roles can be managed."
   type        = string
 }
 
@@ -53,22 +53,22 @@ variable "entra_administrator_principal_type" {
   default     = "User"
 }
 
-variable "orders_group_name" {
-  description = "Display name of the Entra group that owns the orders database."
+variable "analytics_group_name" {
+  description = "Display name of the Entra group that owns the analytics database."
   type        = string
 }
 
-variable "orders_group_object_id" {
-  description = "Object id of the Entra group that owns the orders database."
+variable "analytics_group_object_id" {
+  description = "Object id of the Entra group that owns the analytics database."
   type        = string
 }
 
-variable "billing_identity_name" {
-  description = "Display name of the managed identity that owns the billing database."
+variable "reporting_identity_name" {
+  description = "Display name of the managed identity that owns the reporting database."
   type        = string
 }
 
-variable "billing_identity_object_id" {
-  description = "Object id (not the client id) of the managed identity that owns the billing database."
+variable "reporting_identity_object_id" {
+  description = "Object id (not the client id) of the managed identity that owns the reporting database."
   type        = string
 }

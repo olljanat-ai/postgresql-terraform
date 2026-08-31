@@ -43,5 +43,6 @@ terraform.rc
 # Uncomment the line below if you want to ignore planout files.
 # planout
 
-# This repository is a reusable module, its lock file is not used by consumers
-.terraform.lock.hcl
+# The repository root is a reusable module, its lock file is not used by
+# consumers. The lock file of an environment is committed as usual.
+/.terraform.lock.hcl
