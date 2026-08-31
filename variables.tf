@@ -87,26 +87,11 @@ variable "firewall_rules" {
   default = {}
 }
 
-variable "entra_administrator" {
-  description = "Microsoft Entra ID principal that becomes an administrator of the server. Required when any database is owned by an Entra ID identity. This has to be the very identity the Azure CLI is signed in as while Terraform runs: only an Entra administrator may create Entra principals, and only a token of the signed in identity can be requested, so a different identity here fails the apply. principal_name is the user principal name of a user and the display name of a group or a service principal."
-  type = object({
-    object_id      = string
-    principal_name = string
-    principal_type = optional(string, "User")
-  })
-  default = null
-
-  validation {
-    condition     = contains(["User", "Group", "ServicePrincipal"], try(var.entra_administrator.principal_type, "User"))
-    error_message = "entra_administrator.principal_type must be one of User, Group or ServicePrincipal."
-  }
-}
-
 variable "databases" {
   description = <<-EOT
     Databases to create. Every database gets its own owner, which has full permissions on that database and no permissions on the other ones.
 
-    The owner is either a PostgreSQL role authenticated with a username and a generated password (the default), or a Microsoft Entra ID identity when `entra_principal` is set. `entra_principal.name` is the Entra display name for a group or service principal and the user principal name for a user, and `entra_principal.object_id` is its Entra object id.
+    The owner is a PostgreSQL role authenticated with a username and a generated password. The role is named `owner_username`, or `<name>_owner` when that is left unset.
   EOT
 
   type = list(object({
@@ -114,25 +99,12 @@ variable "databases" {
     charset        = optional(string, "UTF8")
     collation      = optional(string, "en_US.utf8")
     owner_username = optional(string)
-    entra_principal = optional(object({
-      name      = string
-      object_id = string
-      type      = optional(string, "user")
-    }))
   }))
   default = []
 
   validation {
     condition     = length(distinct([for db in var.databases : db.name])) == length(var.databases)
     error_message = "Database names must be unique."
-  }
-
-  validation {
-    condition = alltrue([
-      for db in var.databases :
-      contains(["user", "group", "service"], try(db.entra_principal.type, "user"))
-    ])
-    error_message = "databases[*].entra_principal.type must be one of user, group or service."
   }
 }
 
