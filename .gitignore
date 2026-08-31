@@ -42,5 +42,6 @@ terraform.rc
 # Optional: ignore plan files saved before destroying Terraform configuration
 # Uncomment the line below if you want to ignore planout files.
 # planout
-# Terraform lock files of the examples are environment specific here
-examples/*/.terraform.lock.hcl
+
+# This repository is a reusable module, its lock file is not used by consumers
+.terraform.lock.hcl
