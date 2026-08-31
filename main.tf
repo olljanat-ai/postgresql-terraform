@@ -85,7 +85,10 @@ resource "postgresql_role" "owner" {
   login    = true
   password = random_password.owner[each.key].result
 
-  depends_on = [azurerm_postgresql_flexible_server_firewall_rule.this]
+  depends_on = [
+    azurerm_postgresql_flexible_server.this,
+    azurerm_postgresql_flexible_server_firewall_rule.this,
+  ]
 }
 
 resource "postgresql_database" "password" {
@@ -157,6 +160,7 @@ resource "terraform_data" "entra_principal" {
   }
 
   depends_on = [
+    azurerm_postgresql_flexible_server.this,
     azurerm_postgresql_flexible_server_active_directory_administrator.this,
     azurerm_postgresql_flexible_server_firewall_rule.this,
   ]
