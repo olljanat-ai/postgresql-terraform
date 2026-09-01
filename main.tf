@@ -2,6 +2,10 @@ locals {
   # The owner is an ordinary PostgreSQL role that happens to own the database.
   owner_role_name = coalesce(var.owner_username, "${var.database_name}_owner")
 
+  # The identity is named after the database it reaches, unless it is given a
+  # name of its own. This is also the PostgreSQL role name.
+  workload_identity_name = coalesce(var.workload_identity_name, "id-${var.database_name}")
+
   key_vault_enabled = var.key_vault_name != null
 
   # A Key Vault secret name may only carry letters, digits and dashes, while a
@@ -126,6 +130,22 @@ resource "postgresql_grant_role" "owner_to_administrator" {
 # The workload identity, which reaches the database as a second owner
 ################################################################################
 
+# The user assigned managed identity of the application. It is created here
+# rather than passed in, so that the identity, the PostgreSQL role and the label
+# tying the two together are one unit: there is no object id to copy between
+# configurations and no way for them to drift apart.
+#
+# Attaching it to whatever runs the application, a virtual machine, an App
+# Service or an AKS workload, is that workload's own deployment. The identity
+# and its client id are outputs for exactly that.
+resource "azurerm_user_assigned_identity" "workload" {
+  name                = local.workload_identity_name
+  resource_group_name = azurerm_resource_group.this.name
+  location            = azurerm_resource_group.this.location
+
+  tags = var.tags
+}
+
 # A PostgreSQL database has exactly one owner, so a second identity reaches it
 # by being a member of the owner role rather than by owning it too. A member
 # passes every ownership check, because PostgreSQL tests ownership with
@@ -135,7 +155,7 @@ resource "postgresql_grant_role" "owner_to_administrator" {
 # The role has no password. What makes Entra ID able to sign in to it is the
 # security label below, not the way the role is created.
 resource "postgresql_role" "workload_identity" {
-  name  = var.workload_identity.name
+  name  = azurerm_user_assigned_identity.workload.name
   login = true
 
   # ALTER ROLE ... SET ROLE: the identity switches to the owner role at login,
@@ -173,7 +193,7 @@ resource "postgresql_security_label" "workload_identity" {
   object_type    = "role"
   object_name    = postgresql_role.workload_identity.name
   label_provider = "pgaadauth"
-  label          = "aadauth,oid=${var.workload_identity.object_id},type=service"
+  label          = "aadauth,oid=${azurerm_user_assigned_identity.workload.principal_id},type=service"
 
   depends_on = [azurerm_postgresql_flexible_server_active_directory_administrator.this]
 }
