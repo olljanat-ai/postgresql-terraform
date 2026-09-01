@@ -132,6 +132,41 @@ handed out but a property a role has.
    it. So the owner has full rights in its own database, and only in that one.
    `postgresql_version` is validated to be 15 or newer for this reason.
 
+### Why the database is created by the postgresql provider
+
+Steps 3 and 4 both hang off one fact: the owner role owns the database. That is
+why the database is created by `postgresql_database` with an explicit `owner`,
+and not by `azurerm_postgresql_flexible_server_database`. A database created
+over the Azure Resource Manager API is owned by the role the control plane runs
+as, not by the owner role, and the two steps then fall apart in order:
+
+* Revoking `CONNECT` from `PUBLIC` takes away the only entry the owner role had
+  in the database ACL, because it never got an entry of its own. Signing in then
+  fails with `permission denied for database "..." DETAIL: User does not have
+  CONNECT privilege.`
+* Granting `CONNECT` back by hand gets past the sign in and straight into the
+  next wall: `pg_database_owner` is somebody else, so the owner role has no
+  `CREATE` on the `public` schema and the first `CREATE TABLE` fails with
+  `permission denied for schema public`.
+
+What the database is owned by is worth checking before anything else when a
+login is refused:
+
+```sql
+SELECT datname, pg_get_userbyid(datdba) AS owner, datacl FROM pg_database;
+```
+
+The owner column has to name the owner role. Where the database already exists
+and is owned by somebody else, `ALTER DATABASE <name> OWNER TO <owner role>`
+moves it, and rerunning the apply is then enough.
+
+`postgresql_grant_role.owner_to_administrator` is what makes any of this legal.
+The Azure administrator login is not a superuser, and PostgreSQL only lets a
+role create a database owned by another role, hand an existing one over to it,
+or `ALTER ROLE ... SET ROLE` into it, while it is a member of that role. Drop
+the grant and the ownership the whole design rests on cannot be established at
+all.
+
 ### Why the workload identity needs no grants either
 
 A database has exactly one owner: `pg_database.datdba` holds a single role. The
