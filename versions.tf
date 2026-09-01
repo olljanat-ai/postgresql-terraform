@@ -22,8 +22,8 @@ terraform {
     }
   }
 
-  # The state holds the generated owner passwords in cleartext even when they
-  # are also written to the Key Vault, so anything that outlives a single laptop
+  # The state holds the generated owner password in cleartext even when it is
+  # also written to the Key Vault, so anything that outlives a single laptop
   # belongs in a remote backend.
   #
   # backend "azurerm" {
@@ -54,15 +54,11 @@ provider "postgresql" {
 }
 
 # Marking a role as a Microsoft Entra principal is a SECURITY LABEL statement,
-# and only a Microsoft Entra administrator of the server may run it, so those
-# statements go over a second connection that signs in with an Entra access
+# and only a Microsoft Entra administrator of the server may run it, so that one
+# statement goes over a second connection that signs in with an Entra access
 # token. The provider asks for the token itself, through the same credential
 # chain the azurerm provider uses, so nothing here shells out to psql or to the
 # Azure CLI.
-#
-# Without Entra owners this connection has nothing to do. It then falls back to
-# the administrator and its password, which keeps an environment that uses no
-# Entra ID from needing an Azure identity that can sign in to PostgreSQL at all.
 provider "postgresql" {
   alias = "entra"
 
@@ -71,9 +67,8 @@ provider "postgresql" {
   sslmode   = "require"
   superuser = false
 
-  username = var.entra_administrator != null ? var.entra_administrator.principal_name : var.administrator_login
-  password = var.entra_administrator != null ? null : var.administrator_password
+  username = var.entra_administrator.principal_name
 
-  azure_identity_auth = var.entra_administrator != null
-  azure_tenant_id     = var.entra_administrator != null ? data.azurerm_client_config.current.tenant_id : null
+  azure_identity_auth = true
+  azure_tenant_id     = data.azurerm_client_config.current.tenant_id
 }

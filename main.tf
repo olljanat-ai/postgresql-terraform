@@ -1,72 +1,15 @@
 locals {
-  databases = { for db in var.databases : db.name => db }
+  # The owner is an ordinary PostgreSQL role that happens to own the database.
+  owner_role_name = coalesce(var.owner_username, "${var.database_name}_owner")
 
-  # Both kinds of owner are an ordinary PostgreSQL role, and the databases, the
-  # grants and the outputs treat them alike. An Entra owned role is named after
-  # the identity, because that is the name Entra ID resolves at sign in.
-  owner_role_names = {
-    for name, db in local.databases :
-    name => db.entra_principal != null ? db.entra_principal.name : coalesce(db.owner_username, "${name}_owner")
-  }
-
-  # The owner role signs in with a generated password, unless it is an Entra
-  # identity, or unless owner_login is off and it only holds the ownership
-  # while its members do the signing in.
-  password_owners = {
-    for name, db in local.databases :
-    name => db if db.entra_principal == null && db.owner_login
-  }
-
-  entra_owners = {
-    for name, db in local.databases :
-    name => db if db.entra_principal != null
-  }
-
-  # Further login roles that are members of the owner role. Keyed by
-  # "<database>/<role>", because a database may have several of them and a role
-  # name alone would not say which database it belongs to.
-  owner_members = merge(
-    {},
-    [
-      for name, db in local.databases : {
-        for member in db.owner_members :
-        "${name}/${member.name}" => {
-          database        = name
-          name            = member.name
-          owner           = local.owner_role_names[name]
-          entra_principal = member.entra_principal
-        }
-      }
-    ]...
-  )
-
-  password_members = {
-    for key, member in local.owner_members :
-    key => member if member.entra_principal == null
-  }
-
-  entra_members = {
-    for key, member in local.owner_members :
-    key => member if member.entra_principal != null
-  }
-
-  entra_auth_enabled = var.entra_administrator != null
-  key_vault_enabled  = var.key_vault_name != null
+  key_vault_enabled = var.key_vault_name != null
 
   # A Key Vault secret name may only carry letters, digits and dashes, while a
-  # PostgreSQL role name commonly carries underscores. Only the password
-  # authenticated roles have a secret at all.
-  owner_secret_names = {
-    for name, db in local.password_owners :
-    name => replace(local.owner_role_names[name], "_", "-")
-  }
-
-  member_secret_names = {
-    for key, member in local.password_members :
-    key => replace(member.name, "_", "-")
-  }
-
+  # PostgreSQL role name commonly carries underscores.
+  owner_secret_name         = replace(local.owner_role_name, "_", "-")
   administrator_secret_name = replace(var.administrator_login, "_", "-")
+
+  firewall_rule_enabled = var.firewall_rule_start_ip_address != null && var.firewall_rule_end_ip_address != null
 }
 
 data "azurerm_client_config" "current" {}
@@ -97,13 +40,13 @@ resource "azurerm_postgresql_flexible_server" "this" {
   backup_retention_days         = var.backup_retention_days
   public_network_access_enabled = var.public_network_access_enabled
 
-  # Password authentication stays on in either case: Terraform creates the
-  # databases and the roles as the built-in administrator, which has no Entra
+  # Password authentication stays on alongside Entra ID: Terraform creates the
+  # database and the roles as the built-in administrator, which has no Entra
   # identity behind it.
   authentication {
     password_auth_enabled         = true
-    active_directory_auth_enabled = local.entra_auth_enabled
-    tenant_id                     = local.entra_auth_enabled ? data.azurerm_client_config.current.tenant_id : null
+    active_directory_auth_enabled = true
+    tenant_id                     = data.azurerm_client_config.current.tenant_id
   }
 
   zone = var.zone
@@ -111,25 +54,26 @@ resource "azurerm_postgresql_flexible_server" "this" {
   tags = var.tags
 
   lifecycle {
+    # Checked here rather than on the firewall rule, because with only one of
+    # the two set the rule is not created at all and a precondition on it would
+    # never run.
     precondition {
-      condition     = length(local.entra_owners) + length(local.entra_members) == 0 || var.entra_administrator != null
-      error_message = "entra_administrator has to be set when a database has an Entra ID identity as its owner or among its owner_members: only an Entra administrator may mark a role as an Entra principal."
+      condition     = (var.firewall_rule_start_ip_address == null) == (var.firewall_rule_end_ip_address == null)
+      error_message = "firewall_rule_start_ip_address and firewall_rule_end_ip_address have to be set together, or both left unset."
     }
   }
 }
 
 resource "azurerm_postgresql_flexible_server_firewall_rule" "this" {
-  for_each = var.firewall_rules
+  count = local.firewall_rule_enabled ? 1 : 0
 
-  name             = each.key
+  name             = var.firewall_rule_name
   server_id        = azurerm_postgresql_flexible_server.this.id
-  start_ip_address = each.value.start_ip_address
-  end_ip_address   = each.value.end_ip_address
+  start_ip_address = var.firewall_rule_start_ip_address
+  end_ip_address   = var.firewall_rule_end_ip_address
 }
 
 resource "azurerm_postgresql_flexible_server_active_directory_administrator" "this" {
-  count = local.entra_auth_enabled ? 1 : 0
-
   server_name         = azurerm_postgresql_flexible_server.this.name
   resource_group_name = azurerm_resource_group.this.name
   tenant_id           = data.azurerm_client_config.current.tenant_id
@@ -139,28 +83,24 @@ resource "azurerm_postgresql_flexible_server_active_directory_administrator" "th
 }
 
 ################################################################################
-# Databases and their owners
+# The owner of the database
 ################################################################################
 
 resource "random_password" "owner" {
-  for_each = local.password_owners
+  count = var.owner_login ? 1 : 0
 
   length           = 32
   special          = true
   override_special = "!#%&*()-_=+[]<>:?"
 }
 
-# One role per database, whichever way it authenticates. An Entra owner has no
-# password: what makes Entra ID able to sign in to it is the security label
-# below, not the way the role is created. An owner with owner_login = false has
-# no password either, and does not sign in at all, it only holds the ownership
-# while the members below sign in on its behalf.
+# The role that owns the database. With owner_login off it has no password and
+# does not sign in: it then only holds the ownership, while the workload
+# identity below signs in on its behalf.
 resource "postgresql_role" "owner" {
-  for_each = local.databases
-
-  name     = local.owner_role_names[each.key]
-  login    = each.value.entra_principal != null || each.value.owner_login
-  password = each.value.entra_principal == null && each.value.owner_login ? random_password.owner[each.key].result : null
+  name     = local.owner_role_name
+  login    = var.owner_login
+  password = one(random_password.owner[*].result)
 
   depends_on = [
     azurerm_postgresql_flexible_server.this,
@@ -168,11 +108,55 @@ resource "postgresql_role" "owner" {
   ]
 }
 
-# Entra owned roles used to be a resource of their own, before an owner could
-# also be a role that never signs in and the three cases became one resource.
-moved {
-  from = postgresql_role.entra_owner
-  to   = postgresql_role.owner
+# The administrator is not a superuser on Azure, so it can only create a
+# database owned by another role, and later revoke privileges on it, while it is
+# a member of that role. The membership is granted before the database is
+# created, which also makes the provider skip the temporary grant it would
+# otherwise revoke right after the database is created.
+resource "postgresql_grant_role" "owner_to_administrator" {
+  role       = var.administrator_login
+  grant_role = postgresql_role.owner.name
+
+  # The administrator created the role, so it is already its grantor and cannot
+  # be granted the admin option back.
+  with_admin_option = false
+}
+
+################################################################################
+# The workload identity, which reaches the database as a second owner
+################################################################################
+
+# A PostgreSQL database has exactly one owner, so a second identity reaches it
+# by being a member of the owner role rather than by owning it too. A member
+# passes every ownership check, because PostgreSQL tests ownership with
+# has_privs_of_role(current_user, owner) rather than current_user = owner, and
+# that includes the pg_database_owner membership carrying the public schema.
+#
+# The role has no password. What makes Entra ID able to sign in to it is the
+# security label below, not the way the role is created.
+resource "postgresql_role" "workload_identity" {
+  name  = var.workload_identity.name
+  login = true
+
+  # ALTER ROLE ... SET ROLE: the identity switches to the owner role at login,
+  # so everything it creates is owned by the owner role rather than by itself.
+  # Without it the two would end up owning each other's tables, and retiring
+  # either one would mean reassigning them first.
+  #
+  # PostgreSQL checks that the role running this statement, the administrator,
+  # may become the owner role, hence the dependency on its membership.
+  assume_role = postgresql_role.owner.name
+
+  depends_on = [postgresql_grant_role.owner_to_administrator]
+}
+
+resource "postgresql_grant_role" "workload_identity_to_owner" {
+  role       = postgresql_role.workload_identity.name
+  grant_role = postgresql_role.owner.name
+
+  # The identity is an ordinary user of the database, it does not hand the role
+  # on to anybody else.
+  with_admin_option = false
 }
 
 # This is the whole of what pgaadauth_create_principal_with_oid does: it writes
@@ -183,136 +167,43 @@ moved {
 # Azure only lets a Microsoft Entra administrator write the label, hence the
 # second provider, and the administrator of the server has to exist before that
 # connection can be made at all.
-resource "postgresql_security_label" "entra_owner" {
+resource "postgresql_security_label" "workload_identity" {
   provider = postgresql.entra
 
-  for_each = local.entra_owners
-
   object_type    = "role"
-  object_name    = postgresql_role.owner[each.key].name
+  object_name    = postgresql_role.workload_identity.name
   label_provider = "pgaadauth"
-  label          = "aadauth,oid=${each.value.entra_principal.object_id},type=${each.value.entra_principal.type}"
-
-  depends_on = [azurerm_postgresql_flexible_server_active_directory_administrator.this]
-}
-
-# The administrator is not a superuser on Azure, so it can only create a
-# database owned by another role, and later revoke privileges on it, while it is
-# a member of that role. The membership is granted before the database is
-# created, which also makes the provider skip the temporary grant it would
-# otherwise revoke right after the database is created.
-resource "postgresql_grant_role" "owner_to_administrator" {
-  for_each = local.databases
-
-  role       = var.administrator_login
-  grant_role = local.owner_role_names[each.key]
-
-  # The administrator created the role, so it is already its grantor and cannot
-  # be granted the admin option back.
-  with_admin_option = false
-
-  depends_on = [postgresql_role.owner]
-}
-
-################################################################################
-# Further owners of a database
-################################################################################
-
-# A member is a login role of its own that is granted the owner role, so it has
-# the rights of the owner without the database changing hands. Several of them
-# can exist side by side, each authenticating its own way, which is what lets an
-# application move from a password to an Entra workload identity while both
-# still work.
-
-resource "random_password" "member" {
-  for_each = local.password_members
-
-  length           = 32
-  special          = true
-  override_special = "!#%&*()-_=+[]<>:?"
-}
-
-resource "postgresql_role" "member" {
-  for_each = local.owner_members
-
-  name     = each.value.name
-  login    = true
-  password = each.value.entra_principal == null ? random_password.member[each.key].result : null
-
-  # ALTER ROLE ... SET ROLE: the member switches to the owner role at login, so
-  # everything it creates is owned by the owner role rather than by the member
-  # itself. Without it the members of one database would end up owning each
-  # other's tables, and dropping a member would mean reassigning them first.
-  #
-  # PostgreSQL checks that the role running this statement, the administrator,
-  # may become the owner role, hence the dependency on its membership.
-  assume_role = each.value.owner
-
-  depends_on = [
-    azurerm_postgresql_flexible_server.this,
-    azurerm_postgresql_flexible_server_firewall_rule.this,
-    postgresql_grant_role.owner_to_administrator,
-  ]
-}
-
-resource "postgresql_grant_role" "member_to_owner" {
-  for_each = local.owner_members
-
-  role       = postgresql_role.member[each.key].name
-  grant_role = each.value.owner
-
-  # A member is an ordinary user of the database, it does not hand the role on.
-  with_admin_option = false
-}
-
-resource "postgresql_security_label" "member" {
-  provider = postgresql.entra
-
-  for_each = local.entra_members
-
-  object_type    = "role"
-  object_name    = postgresql_role.member[each.key].name
-  label_provider = "pgaadauth"
-  label          = "aadauth,oid=${each.value.entra_principal.object_id},type=${each.value.entra_principal.type}"
+  label          = "aadauth,oid=${var.workload_identity.object_id},type=service"
 
   depends_on = [azurerm_postgresql_flexible_server_active_directory_administrator.this]
 }
 
 ################################################################################
-# The databases themselves
+# The database
 ################################################################################
 
 resource "postgresql_database" "this" {
-  for_each = local.databases
+  name       = var.database_name
+  owner      = postgresql_role.owner.name
+  template   = "template0"
+  encoding   = var.database_charset
+  lc_collate = var.database_collation
+  lc_ctype   = var.database_collation
 
   depends_on = [postgresql_grant_role.owner_to_administrator]
-
-  name       = each.key
-  owner      = local.owner_role_names[each.key]
-  template   = "template0"
-  encoding   = each.value.charset
-  lc_collate = each.value.collation
-  lc_ctype   = each.value.collation
 }
 
-################################################################################
-# Hardening
-################################################################################
-
-# Without this every role, including the owners of the other databases, can
-# connect to the database through the PUBLIC role.
+# Without this every role on the server can connect to the database through the
+# PUBLIC role.
 resource "postgresql_grant" "revoke_public_connect" {
-  for_each = var.revoke_public_connect ? local.databases : {}
+  count = var.revoke_public_connect ? 1 : 0
 
-  database    = each.key
+  database    = postgresql_database.this.name
   role        = "public"
   object_type = "database"
   privileges  = []
 
-  depends_on = [
-    postgresql_database.this,
-    postgresql_grant_role.owner_to_administrator,
-  ]
+  depends_on = [postgresql_grant_role.owner_to_administrator]
 }
 
 ################################################################################
@@ -372,35 +263,20 @@ resource "time_sleep" "key_vault_role_assignment" {
   }
 }
 
+# The workload identity has no password, so there is one owner secret and no
+# more. It disappears together with the password when owner_login is turned off.
 resource "azurerm_key_vault_secret" "owner" {
-  for_each = local.key_vault_enabled ? local.password_owners : {}
+  count = local.key_vault_enabled && var.owner_login ? 1 : 0
 
-  name         = local.owner_secret_names[each.key]
-  value        = random_password.owner[each.key].result
+  name         = local.owner_secret_name
+  value        = random_password.owner[0].result
   key_vault_id = azurerm_key_vault.this[0].id
   content_type = "PostgreSQL password"
 
   tags = merge(var.tags, {
     server   = azurerm_postgresql_flexible_server.this.name
-    database = each.key
-    role     = local.owner_role_names[each.key]
-  })
-
-  depends_on = [time_sleep.key_vault_role_assignment]
-}
-
-resource "azurerm_key_vault_secret" "member" {
-  for_each = local.key_vault_enabled ? local.password_members : {}
-
-  name         = local.member_secret_names[each.key]
-  value        = random_password.member[each.key].result
-  key_vault_id = azurerm_key_vault.this[0].id
-  content_type = "PostgreSQL password"
-
-  tags = merge(var.tags, {
-    server   = azurerm_postgresql_flexible_server.this.name
-    database = each.value.database
-    role     = each.value.name
+    database = var.database_name
+    role     = local.owner_role_name
   })
 
   depends_on = [time_sleep.key_vault_role_assignment]
