@@ -3,7 +3,7 @@
 
 provider "registry.terraform.io/cyrilgdn/postgresql" {
   version     = "1.27.0"
-  constraints = ">= 1.22.0"
+  constraints = ">= 1.25.0"
   hashes = [
     "h1:OLbc15TOdKw2afn+M5H8MjQQRbYbEpiWDSj7yHg6iEw=",
     "zh:0d6fa6f12393f19b95652932c1a53984096bca2dfe27ce8c50f2f7881bae1b75",

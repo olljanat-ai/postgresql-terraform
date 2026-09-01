@@ -1,7 +1,8 @@
 # Prototype environment.
 #
-# One PostgreSQL flexible server with a handful of databases, each owned by its
-# own role that authenticates with a username and a generated password.
+# One PostgreSQL flexible server carrying every kind of database this
+# configuration supports: owners that authenticate with a username and a
+# generated password, and owners that are Microsoft Entra ID identities.
 #
 #   terraform apply -var-file=environments/prototype.tfvars
 #
@@ -60,23 +61,61 @@ firewall_rules = {
   }
 }
 
+# Terraform signs in to PostgreSQL as this principal to mark the roles below as
+# Entra identities, with a token of the identity it runs as, so this has to be
+# that identity or a group it belongs to. A group is the easier of the two,
+# because it keeps working when the identity running Terraform changes:
+#
+#   az ad group show --group sg-postgresql-admins --query id -o tsv
+#
+# As the signed in user instead (principal_name is the user principal name, and
+# principal_type is User):
+#   az ad signed-in-user show --query id -o tsv
+#   az ad signed-in-user show --query userPrincipalName -o tsv
+#
+# As a service principal (principal_name is its display name, not its
+# application id, and principal_type is ServicePrincipal):
+#   az ad sp show --id "$(az account show --query user.name -o tsv)" --query id -o tsv
+#   az ad sp show --id "$(az account show --query user.name -o tsv)" --query displayName -o tsv
+entra_administrator = {
+  object_id      = "9fde82d2-92f3-47dc-bdb3-b07cd4d16b9c"
+  principal_name = "psqladmin@olliaditrooutlook.onmicrosoft.com"
+  principal_type = "User"
+}
+
 databases = [
-  # The owner role defaults to <database>_owner, so orders_owner here.
+  # Username and password owner. The owner role defaults to <database>_owner, so
+  # orders_owner here.
   {
     name = "orders"
   },
 
-  # An owner role under a name of its own.
+  # Username and password owner under a name of its own.
   {
     name           = "billing"
     owner_username = "billing_app"
   },
 
+  # Owned by an Entra ID group: everybody in the group gets full access to the
+  # database, and nobody needs a password.
+  #   az ad group show --group sg-analytics-db-owners --query id -o tsv
   {
     name = "analytics"
+    entra_principal = {
+      name      = "sg-analytics-db-owners"
+      object_id = "f51ee4ed-6c2d-42ee-9ba7-a08814b047ec"
+      type      = "group"
+    }
   },
 
+  # Owned by the managed identity of a workload.
+  #   az identity show --name id-reporting --resource-group rg-reporting --query principalId -o tsv
   {
     name = "reporting"
+    entra_principal = {
+      name      = "id-reporting"
+      object_id = "831b3ba3-03cc-4270-b7e6-5905683c847f"
+      type      = "service"
+    }
   },
 ]
