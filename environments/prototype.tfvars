@@ -83,6 +83,15 @@ entra_administrator = {
   principal_type = "User"
 }
 
+# postgres, azure_sys and azure_maintenance are created by Azure and cannot be
+# dropped, and CONNECT on them cannot be revoked either, so every owner below can
+# open a connection to postgres and to azure_sys. What is revoked instead is
+# everything PUBLIC holds on the public schema of those databases, which leaves
+# such a connection with the system catalogs and nothing to create objects in.
+# This is the default; set it to [] if an apply fails with "must be owner of
+# schema public", and add "azure_sys" when this server allows revoking there.
+revoke_public_schema_on_system_databases = ["postgres"]
+
 databases = [
   # Username and password owner. The owner role defaults to <database>_owner, so
   # orders_owner here.

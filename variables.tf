@@ -151,6 +151,32 @@ variable "revoke_public_connect" {
   default     = true
 }
 
+variable "revoke_public_schema_on_system_databases" {
+  description = <<-EOT
+    Azure system databases whose `public` schema is emptied of everything `PUBLIC` holds on it, so a role that connects there can neither create objects nor use anything in that schema.
+
+    Azure creates `postgres`, `azure_sys` and `azure_maintenance` next to the managed databases. None of the three can be dropped and `CONNECT` on them cannot be revoked, because the managed service owns them, but the `public` schema is owned by `azure_pg_admin`, which the administrator is a member of, so the privileges in it are ours to take away.
+
+    `azure_maintenance` refuses connections already and does not belong here. `azure_sys` is left out by default because the Query Store lives in it; add it when the server lets the administrator revoke there.
+
+    Set this to `[]` when an apply fails with `must be owner of schema public`, which is how a server that does not follow the documented ownership shows up.
+  EOT
+
+  type    = list(string)
+  default = ["postgres"]
+}
+
+variable "revoke_public_connect_on_system_databases" {
+  description = <<-EOT
+    Azure system databases to revoke `CONNECT` from `PUBLIC` on. Empty by default, because revoking on a database requires owning it, and the system databases are owned by `azuresu`, the superuser only Microsoft is a member of, so the apply fails with `must be owner of database postgres`.
+
+    It is here because that ownership is a property of the server rather than of PostgreSQL, so a server that does grant it, or a self managed PostgreSQL this configuration is pointed at, can close the databases completely instead of only emptying their `public` schema.
+  EOT
+
+  type    = list(string)
+  default = []
+}
+
 variable "tags" {
   description = "Tags applied to the resource group and the server."
   type        = map(string)

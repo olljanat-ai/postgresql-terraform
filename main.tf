@@ -215,6 +215,65 @@ resource "postgresql_grant" "revoke_public_connect" {
   ]
 }
 
+# Azure creates postgres, azure_sys and azure_maintenance next to the managed
+# databases and keeps them for the managed service. They are owned by azuresu,
+# the superuser only Microsoft is a member of, so the administrator here can
+# neither drop them nor revoke CONNECT on them, and every role that reaches the
+# server can open a connection to postgres and to azure_sys. azure_maintenance
+# refuses connections on its own.
+#
+# What is left is to make such a connection worth nothing. The public schema is
+# what an ordinary role can reach in them, and Azure keeps it owned by
+# azure_pg_admin on every supported version rather than by pg_database_owner.
+# The administrator is a member of azure_pg_admin, so the privileges in that
+# schema are ours to revoke. Emptying it leaves a connected role with the system
+# catalogs and no way to create anything.
+resource "postgresql_grant" "revoke_public_schema_on_system_databases" {
+  for_each = toset(var.revoke_public_schema_on_system_databases)
+
+  database    = each.key
+  role        = "public"
+  schema      = "public"
+  object_type = "schema"
+  privileges  = []
+
+  depends_on = [
+    azurerm_postgresql_flexible_server.this,
+    azurerm_postgresql_flexible_server_firewall_rule.this,
+  ]
+
+  lifecycle {
+    precondition {
+      condition     = !contains(keys(local.databases), each.key)
+      error_message = "revoke_public_schema_on_system_databases lists ${each.key}, which is a managed database. The managed databases are hardened through revoke_public_connect instead."
+    }
+  }
+}
+
+# Closing the system databases outright rather than only their public schema.
+# Off by default because it needs ownership of the database, which Azure keeps,
+# and the apply fails outright when the server refuses.
+resource "postgresql_grant" "revoke_public_connect_on_system_databases" {
+  for_each = toset(var.revoke_public_connect_on_system_databases)
+
+  database    = each.key
+  role        = "public"
+  object_type = "database"
+  privileges  = []
+
+  depends_on = [
+    azurerm_postgresql_flexible_server.this,
+    azurerm_postgresql_flexible_server_firewall_rule.this,
+  ]
+
+  lifecycle {
+    precondition {
+      condition     = !contains(keys(local.databases), each.key)
+      error_message = "revoke_public_connect_on_system_databases lists ${each.key}, which is a managed database. Use revoke_public_connect for those."
+    }
+  }
+}
+
 ################################################################################
 # Key Vault holding the passwords
 ################################################################################

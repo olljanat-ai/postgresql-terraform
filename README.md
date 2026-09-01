@@ -95,16 +95,78 @@ metadata endpoint instead of the Azure CLI.
 
 ## How the isolation works
 
-* Each database is created with `CREATE DATABASE ... OWNER <its own role>`. From
-  PostgreSQL 15 onwards the `public` schema is owned by `pg_database_owner` and
-  `PUBLIC` no longer has `CREATE` on it, so the owner has full rights inside its
-  database without any extra grants and nobody else has any. `postgresql_version`
-  is therefore required to be 15 or newer.
+* Each database is created with `CREATE DATABASE ... OWNER <its own role>`, so
+  the owner has full rights inside its database. `postgresql_version` is
+  required to be 15 or newer, because that is the release from which `PUBLIC` no
+  longer holds `CREATE` on the `public` schema by default.
 * `CONNECT` is revoked from `PUBLIC` on every managed database
   (`revoke_public_connect`, on by default). Without it every role on the server,
   including the owners of the other databases, could connect to all of them.
+  This, rather than anything about the `public` schema, is what keeps the
+  databases apart.
 * Only the server administrator, which Terraform itself uses, can reach every
   database.
+* The three databases Azure creates for itself are the exception, and are dealt
+  with separately below.
+
+## The databases Azure creates
+
+Every flexible server carries `postgres`, `azure_maintenance` and `azure_sys`
+next to the managed databases, and any role that can reach the server can open a
+connection to `postgres` and to `azure_sys`, including the database owners
+created here. They cannot be removed:
+
+| Database            | What it is                                                | Reachable                    |
+| ------------------- | --------------------------------------------------------- | ---------------------------- |
+| `postgres`          | The default database every client falls back to.           | Yes, by every role           |
+| `azure_sys`         | Holds the Query Store and the autonomous tuning data.      | Yes, by every role           |
+| `azure_maintenance` | Separates the managed service processes from user actions. | No, Azure refuses connections |
+
+All three belong to the managed service and are owned by `azuresu`, the
+superuser only Microsoft is a member of. The administrator this configuration
+uses is a member of `azure_pg_admin`, which is not that role, so it may neither
+drop them nor revoke `CONNECT` on them: both fail with `must be owner of
+database postgres`. Nothing in Terraform changes that, it is a property of the
+service.
+
+What can be taken away is what such a connection is good for. Azure keeps the
+`public` schema owned by `azure_pg_admin` on every supported version, so the
+administrator may revoke in it, and
+`revoke_public_schema_on_system_databases` (`["postgres"]` by default) empties
+that schema of everything `PUBLIC` holds on it. A role that connects to
+`postgres` afterwards is left with the system catalogs and no way to create
+anything, in particular no way to fill the server storage with tables in a
+database nobody looks at.
+
+`azure_sys` is not in the default because the Query Store lives there; add it
+when the server lets the administrator revoke in it. If an apply fails with
+`must be owner of schema public`, the server does not follow the documented
+ownership, and setting the variable to `[]` puts things back.
+
+`revoke_public_connect_on_system_databases` is the stronger version, closing the
+databases outright rather than only their `public` schema. It is empty by
+default because it needs the database ownership Azure keeps, and it is here for
+a server that does grant it, or for a self managed PostgreSQL this configuration
+is pointed at.
+
+What is left after that is the system catalogs: a connected role can list the
+role names, the database names and the server settings, but no data of any other
+database. Check what a given server actually allows with:
+
+```sql
+SELECT datname,
+       pg_get_userbyid(datdba) AS owner,
+       datallowconn,
+       has_database_privilege('orders_owner', datname, 'CONNECT') AS owner_can_connect
+FROM pg_database
+ORDER BY datname;
+```
+
+and, connected to `postgres`, that the schema is empty of public rights:
+
+```sql
+SELECT nspname, nspacl FROM pg_namespace WHERE nspname = 'public';
+```
 
 ## Where the passwords are kept
 
@@ -246,6 +308,8 @@ acquires a token, so it needs no Entra identity that can sign in to PostgreSQL.
 | `public_network_access_enabled` | Whether the server is reachable from the internet.                                      | `bool`         | `true`              |    no    |
 | `firewall_rules`                | Firewall rules, keyed by rule name.                                                     | `map(object)`  | `{}`                |    no    |
 | `revoke_public_connect`         | Revoke `CONNECT` from `PUBLIC` on the managed databases.                                | `bool`         | `true`              |    no    |
+| `revoke_public_schema_on_system_databases` | Azure system databases whose `public` schema is emptied of `PUBLIC` rights.  | `list(string)` | `["postgres"]`      |    no    |
+| `revoke_public_connect_on_system_databases` | Azure system databases to revoke `CONNECT` from `PUBLIC` on.                | `list(string)` | `[]`                |    no    |
 | `key_vault_name`                | Key Vault the generated passwords are written to. Unset means no vault.                 | `string`       | `null`              |    no    |
 | `key_vault_sku_name`            | SKU of the vault, `standard` or `premium`.                                              | `string`       | `"standard"`        |    no    |
 | `key_vault_soft_delete_retention_days` | Days a deleted vault can still be recovered, 7 to 90.                            | `number`       | `7`                 |    no    |
@@ -302,6 +366,16 @@ acquires a token, so it needs no Entra identity that can sign in to PostgreSQL.
   with `az postgres flexible-server list-skus --location <region> --output
   table`, and pin `location`, `sku_name` and `postgresql_version` in the
   environment file.
+* `postgres`, `azure_sys` and `azure_maintenance` are created by Azure and
+  cannot be dropped, and `CONNECT` on them cannot be revoked either, because the
+  managed service owns them. See [The databases Azure
+  creates](#the-databases-azure-creates) for what is done about it instead.
+* Azure keeps the `public` schema owned by `azure_pg_admin` on every supported
+  version rather than by `pg_database_owner`, so the PostgreSQL 15 default that
+  hands the schema to the database owner does not apply here. It costs nothing
+  for the managed databases, where `revoke_public_connect` already keeps
+  everybody but the owner out, but it does mean a role that can connect to a
+  managed database is not stopped by the schema alone.
 * Turning Entra authentication on or off on an existing server restarts it, so
   adding the first `entra_principal` database to an environment that had none
   causes a short outage.
