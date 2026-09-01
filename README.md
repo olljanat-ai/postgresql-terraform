@@ -220,6 +220,82 @@ than removed though, so on a vault with `key_vault_purge_protection_enabled` the
 name stays reserved until the retention period runs out, and the write fails
 until it is recovered or purged.
 
+### Migrating a database created over the Azure API
+
+A database that already exists as `azurerm_postgresql_flexible_server_database`
+moves in here without being recreated: the resource leaves the state, the
+database is imported as `postgresql_database.this`, and Terraform hands it over
+to the owner role itself. Nothing inside the database is touched. Two steps of
+that can destroy it instead, so both are settled before anything is applied.
+
+**Do not simply delete the resource block.** That plans a destroy, and the
+database goes with it. Take it out of the state, which leaves the database
+standing:
+
+```bash
+terraform state rm azurerm_postgresql_flexible_server_database.this
+```
+
+From Terraform 1.7 onwards a `removed` block does the same as part of the plan,
+which is the reviewable version of it:
+
+```hcl
+removed {
+  from = azurerm_postgresql_flexible_server_database.this
+
+  lifecycle {
+    destroy = false
+  }
+}
+```
+
+**Encoding and collation force a replacement when they differ.** `encoding`,
+`lc_collate` and `lc_ctype` are read back from `pg_database` on import and all
+three are `ForceNew`, so a `database_collation` that does not match what the
+database actually has plans a drop and a create rather than an update. Read the
+real values off the server first and set `database_charset` and
+`database_collation` to them:
+
+```sql
+SELECT pg_encoding_to_char(encoding) AS encoding, datcollate, datctype
+FROM pg_database WHERE datname = 'billing';
+```
+
+`template` is `ForceNew` as well but is not a risk: the provider fills it in from
+the configuration on read, because a database does not record what it was cloned
+from, so it never differs.
+
+Then import, as a block rather than the CLI, so that the plan shows the outcome
+before the state is written:
+
+```hcl
+import {
+  to = postgresql_database.this
+  id = "billing"
+}
+```
+
+`terraform plan` has to come back with an in-place update of
+`postgresql_database.this` and no replacement anywhere. That update is the
+ownership change, `ALTER DATABASE billing OWNER TO billing_app`, which the
+provider runs itself and which needs the administrator to be a member of the
+owner role — `postgresql_grant_role.owner_to_administrator` again. The `public`
+schema follows on its own from there, because `pg_database_owner` resolves to
+whoever owns the connected database. Drop the `import` block once the apply has
+gone through.
+
+`alter_object_ownership` on `postgresql_database` looks like it would carry the
+existing objects across at the same time, and is better left off here: it
+reassigns as the *previous* owner and grants that role to the administrator to
+do so, which fails when the previous owner is an Azure-internal role. Hand the
+objects over as below instead.
+
+One more thing worth checking before the apply rather than after:
+`revoke_public_connect` locks out every role that is not the owner, a member of
+it, or an administrator. Where something else still reaches this database under
+a role of its own, set it to `false` for the migration and turn it back on once
+those roles are members of the owner role.
+
 ### Objects that already exist
 
 `ALTER ROLE ... SET ROLE` only affects what is created from now on. If the
