@@ -202,6 +202,13 @@ resource "postgresql_security_label" "workload_identity" {
 # The database
 ################################################################################
 
+# The database is created here rather than with
+# azurerm_postgresql_flexible_server_database, because the owner is the whole
+# point: a database created over the Azure Resource Manager API belongs to the
+# role the control plane runs as, which leaves the owner role with no entry of
+# its own in the database ACL and no pg_database_owner membership. Revoking
+# CONNECT from PUBLIC below then locks the owner out of its own database, and
+# granting CONNECT back only moves the failure on to the public schema.
 resource "postgresql_database" "this" {
   name       = var.database_name
   owner      = postgresql_role.owner.name
