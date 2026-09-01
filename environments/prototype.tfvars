@@ -87,15 +87,17 @@ entra_administrator = {
   principal_type = "User"
 }
 
-# The managed identity of the application. name becomes the name of the
-# PostgreSQL role and is what Entra ID resolves at sign in, so it is the display
-# name of the identity rather than its application id.
+# The user assigned managed identity of the application, which this
+# configuration creates into the resource group above. Its name is also the name
+# of the PostgreSQL role, because that is what Entra ID resolves at sign in.
+# Leaving it unset would give id-<database_name>, so id-billing here.
 #
-#   az identity show --name id-billing-app --resource-group rg-billing --query principalId -o tsv
-workload_identity = {
-  name      = "id-billing-app"
-  object_id = "5c9d1f2e-7a44-4b1c-9f83-2d6e0a7b1c45"
-}
+# Attaching the identity to whatever runs the application is that workload's own
+# deployment:
+#
+#   terraform output -raw workload_identity_id
+#   terraform output -raw workload_identity_client_id
+workload_identity_name = "id-billing-app"
 
 # Turn this off once the application signs in as the workload identity only. The
 # owner role keeps owning the database and everything in it, but it can no

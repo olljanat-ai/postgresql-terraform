@@ -139,17 +139,18 @@ variable "owner_login" {
   default     = true
 }
 
-variable "workload_identity" {
-  description = "Microsoft Entra workload identity that gets the same access to the database as the owner. It is a login role of its own, granted the owner role, so it and the password authenticated owner reach the database side by side and an application can move from the one to the other whenever it is ready."
-  type = object({
-    # The name of the role, which Entra ID resolves when the identity signs in,
-    # so it has to be the display name of the managed identity or the service
-    # principal rather than its application id.
-    name = string
-    # The object id of the service principal of the identity:
-    #   az identity show --name <name> --resource-group <rg> --query principalId -o tsv
-    object_id = string
-  })
+variable "workload_identity_name" {
+  description = "Name of the user assigned managed identity this configuration creates for the application. It is also the name of the PostgreSQL role, because that is the name Entra ID resolves when the identity signs in. Defaults to id-<database_name>."
+  type        = string
+  default     = null
+
+  validation {
+    # The name ends up as a PostgreSQL role name as well, and a role name that
+    # needs quoting in every statement about it is a nuisance rather than an
+    # error, so the safe subset is required here.
+    condition     = var.workload_identity_name == null || can(regex("^[a-zA-Z][a-zA-Z0-9-_]{2,127}$", var.workload_identity_name))
+    error_message = "workload_identity_name has to be 3 to 128 characters of letters, digits, dashes and underscores, and start with a letter."
+  }
 }
 
 variable "revoke_public_connect" {

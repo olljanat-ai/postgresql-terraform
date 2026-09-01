@@ -43,6 +43,21 @@ output "workload_identity_role" {
   value       = postgresql_role.workload_identity.name
 }
 
+output "workload_identity_id" {
+  description = "Resource id of the user assigned managed identity. This is what attaches it to the virtual machine, App Service or AKS workload that runs the application."
+  value       = azurerm_user_assigned_identity.workload.id
+}
+
+output "workload_identity_client_id" {
+  description = "Client id of the user assigned managed identity. A workload that has more than one identity attached has to name this one when it asks the instance metadata endpoint for an access token."
+  value       = azurerm_user_assigned_identity.workload.client_id
+}
+
+output "workload_identity_principal_id" {
+  description = "Object id of the service principal of the user assigned managed identity. This is the oid the PostgreSQL security label maps the role to, and what a role assignment elsewhere in Azure would be granted to."
+  value       = azurerm_user_assigned_identity.workload.principal_id
+}
+
 output "owner_password" {
   description = "Generated password of the owner role, or null when owner_login is off."
   value       = one(random_password.owner[*].result)

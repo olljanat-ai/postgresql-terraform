@@ -4,8 +4,9 @@ Terraform configuration that creates an Azure Database for PostgreSQL flexible
 server with one database on it, reachable two ways:
 
 * as the **owner role**, with a username and a generated password, and
-* as a **Microsoft Entra workload identity**, which connects with an Entra
-  access token instead of a password.
+* as a **Microsoft Entra workload identity**, a user assigned managed identity
+  that this configuration creates, which connects with an Entra access token
+  instead of a password.
 
 Both have exactly the same access to the database, so an application that
 signs in with a password today can move to its managed identity whenever the
@@ -22,7 +23,7 @@ application has somewhere to read it from that is not the Terraform state.
 | ------------------------------- | --------------------------------------------------- |
 | `versions.tf`                   | Provider requirements and the two PostgreSQL providers. |
 | `variables.tf`                  | Input variables.                                    |
-| `main.tf`                       | Resource group, server, database, roles and Key Vault. |
+| `main.tf`                       | Resource group, server, managed identity, database, roles and Key Vault. |
 | `outputs.tf`                    | Outputs.                                            |
 | `environments/prototype.tfvars` | A worked example.                                   |
 
@@ -69,21 +70,46 @@ PGPASSWORD="$(az keyvault secret show \
         dbname=$(terraform output -raw database_name) sslmode=require"
 ```
 
-As the workload identity, where the access token is the password:
+As the workload identity, where the access token is the password. This runs on
+something that has the identity attached, and asks the instance metadata
+endpoint for a token. A user assigned identity has to be named, because a
+workload can carry several:
 
 ```bash
-export PGPASSWORD="$(az account get-access-token \
-  --resource https://ossrdbms-aad.database.windows.net \
-  --query accessToken -o tsv)"
+export PGPASSWORD="$(curl -s -H 'Metadata: true' \
+  "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01\
+&resource=https://ossrdbms-aad.database.windows.net\
+&client_id=$(terraform output -raw workload_identity_client_id)" \
+  | jq -r .access_token)"
 
 psql "host=$(terraform output -raw fqdn) \
       user=$(terraform output -raw workload_identity_role) \
       dbname=$(terraform output -raw database_name) sslmode=require"
 ```
 
-A workload running in Azure requests the same token from the instance metadata
-endpoint instead of the Azure CLI. Nothing else about the connection changes:
-same host, same database, same rights.
+Nothing else about the connection changes: same host, same database, same
+rights. The token expires, so a long lived application asks for a fresh one
+rather than holding on to the first.
+
+### Attaching the identity to the application
+
+The identity is created here, but attaching it to whatever runs the application
+is that workload's own deployment, which is where the knowledge of the workload
+is. Both halves are outputs:
+
+```bash
+terraform output -raw workload_identity_id         # to attach it to a VM, App Service or AKS
+terraform output -raw workload_identity_client_id  # to ask for the token with
+```
+
+An AKS workload federates a Kubernetes service account with the identity instead
+of attaching it; the same resource id is what the federated credential points
+at.
+
+A freshly created identity takes a moment to replicate through Entra ID. The
+apply itself does not wait for it, because nothing in it needs to, but a sign in
+attempted seconds after the first apply can fail until the replication catches
+up.
 
 ## How the access works
 
@@ -115,10 +141,16 @@ rather than by owning it too:
 ```sql
 CREATE ROLE "id-billing-app" LOGIN;
 SECURITY LABEL FOR "pgaadauth" ON ROLE "id-billing-app"
-  IS 'aadauth,oid=5c9d1f2e-7a44-4b1c-9f83-2d6e0a7b1c45,type=service';
+  IS 'aadauth,oid=<principal id of the managed identity>,type=service';
 GRANT billing_app TO "id-billing-app";
 ALTER ROLE "id-billing-app" SET ROLE billing_app;
 ```
+
+The role is named after the identity, because that is the name Entra ID resolves
+at sign in, and the oid in the label is the identity's `principal_id`. Both are
+read straight off the `azurerm_user_assigned_identity` resource, so there is no
+object id to copy between configurations and no way for the two to drift
+apart.
 
 A member passes every ownership check, because PostgreSQL tests ownership with
 `has_privs_of_role(current_user, owner)` rather than `current_user = owner`, and
@@ -202,7 +234,10 @@ the state and in the `owner_password` output only.
 
 `entra_administrator` makes an Entra principal a Microsoft Entra administrator
 of the server. It is required, because only an Entra administrator may mark a
-role as an Entra principal, and Terraform signs in as it to do exactly that.
+role as an Entra principal, and Terraform signs in as it to do exactly that. It
+is not the same thing as the workload identity: the administrator is the
+identity Terraform itself runs as, while the workload identity is created here
+for the application and never administers anything.
 
 ### How the principal is created
 
@@ -254,7 +289,7 @@ built-in administrator over the primary connection.
 | `database_collation`                      | Collation of the database.                                                             | `string` | `"en_US.utf8"`     |    no    |
 | `owner_username`                          | Name of the owner role.                                                                | `string` | `"<db>_owner"`     |    no    |
 | `owner_login`                             | Whether the owner role itself signs in.                                                | `bool`   | `true`             |    no    |
-| `workload_identity`                       | Entra workload identity that gets the same access as the owner.                        | `object` | n/a                |   yes    |
+| `workload_identity_name`                  | Name of the user assigned managed identity created here, and of its PostgreSQL role.   | `string` | `"id-<db>"`        |    no    |
 | `revoke_public_connect`                   | Revoke `CONNECT` from `PUBLIC` on the database.                                        | `bool`   | `true`             |    no    |
 | `tags`                                    | Tags applied to the resource group and the server.                                     | `map`    | `{}`               |    no    |
 | `key_vault_name`                          | Key Vault the owner password is written to. Unset skips the vault.                     | `string` | `null`             |    no    |
@@ -273,13 +308,6 @@ built-in administrator over the primary connection.
 | `principal_name` | User principal name of a user, or display name of a group or service principal. | n/a      |
 | `principal_type` | `User`, `Group` or `ServicePrincipal`.                                          | `"User"` |
 
-### `workload_identity`
-
-| Field       | Description                                                                                        | Default |
-| ----------- | ---------------------------------------------------------------------------------------------------- | ------- |
-| `name`      | Name of the PostgreSQL role, which is the display name of the identity, not its application id.    | n/a     |
-| `object_id` | Object id of the service principal of the identity, from `az identity show --query principalId`.   | n/a     |
-
 ## Outputs
 
 | Name                            | Description                                                        |
@@ -293,6 +321,9 @@ built-in administrator over the primary connection.
 | `owner_role`                    | Role that owns the database.                                       |
 | `owner_login_enabled`           | Whether the owner role can still sign in.                          |
 | `workload_identity_role`        | Role the workload identity signs in as.                            |
+| `workload_identity_id`          | Resource id of the managed identity, to attach it to a workload.   |
+| `workload_identity_client_id`   | Client id of the managed identity, to ask for a token with.        |
+| `workload_identity_principal_id` | Object id of the identity, which is the oid in the security label. |
 | `owner_password`                | Generated owner password, `null` when `owner_login` is off (sensitive). |
 | `key_vault_id`                  | Resource id of the Key Vault, `null` when no vault is created.     |
 | `key_vault_name`                | Name of the Key Vault, `null` when no vault is created.            |
@@ -307,8 +338,10 @@ built-in administrator over the primary connection.
   `ParameterOutOfRange: The value of the 'Version' should be in: []`, an empty
   list rather than the versions that would work. List them with
   `az postgres flexible-server list-skus --location <region> --output table`.
-* The workload identity is a managed role here, so renaming it in
-  `workload_identity.name` drops the role and creates a new one.
+* The managed identity and its PostgreSQL role are both managed here, so
+  changing `workload_identity_name` replaces the identity, which gives it a new
+  object id, and replaces the role and its label with it. Anything that had the
+  old identity attached has to be pointed at the new one.
 * The owner password is stored in the Terraform state as well, the Key Vault
   does not replace a remote backend with restricted access.
 * Rotating the owner password means tainting `random_password.owner`:
