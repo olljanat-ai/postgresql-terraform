@@ -1,8 +1,9 @@
 # Prototype environment.
 #
-# One PostgreSQL flexible server carrying every kind of database this
-# configuration supports: owners that authenticate with a username and a
-# generated password, and owners that are Microsoft Entra ID identities.
+# One PostgreSQL flexible server carrying one database, reachable two ways: as
+# the owner role with a generated password, and as a Microsoft Entra workload
+# identity that is a member of that owner role. Both have the same access, so an
+# application can move from the one to the other whenever it is ready.
 #
 #   terraform apply -var-file=environments/prototype.tfvars
 #
@@ -24,15 +25,17 @@ server_name         = "psql-prototype-0001"
 postgresql_version = "15"
 sku_name           = "B_Standard_B2s"
 
-# The generated owner passwords are written into this Key Vault, one secret per
-# database owner, named after the owner role. The name has to be globally unique
-# and it is created into the resource group above.
+# The database and the role that owns it. owner_username defaults to
+# <database_name>_owner, so leaving it unset would give billing_owner.
+database_name  = "billing"
+owner_username = "billing_app"
+
+# The generated owner password is written into this Key Vault, in a secret named
+# after the owner role. The name has to be globally unique and the vault is
+# created into the resource group above.
 #
 #   az keyvault secret show --vault-name kv-psql-prototype-0001 \
-#     --name orders-owner --query value -o tsv
-#
-# terraform output login_roles maps every role that can sign in to its database,
-# how it authenticates and the secret holding its password.
+#     --name billing-app --query value -o tsv
 #
 # Terraform gives itself the Key Vault Secrets Officer role on the vault, which
 # needs the identity it runs as to be allowed to create role assignments (Owner
@@ -51,23 +54,21 @@ tags = {
   managed_by  = "terraform"
 }
 
-# Terraform manages the databases and the roles over port 5432, so the address
-# it runs from has to be allowed in: curl -s https://api.ipify.org
+# Terraform manages the database and its roles over port 5432, so the address it
+# runs from has to be allowed in: curl -s https://api.ipify.org
 #
 # The range below is the whole internet. It is workable for a throwaway
 # prototype, where the address Terraform runs from is not known up front, but
-# narrow it to that address before this server holds anything real.
-firewall_rules = {
-  terraform = {
-    start_ip_address = "0.0.0.0"
-    end_ip_address   = "255.255.255.255"
-  }
-}
+# narrow it to that address before this server holds anything real. Leave both
+# unset to create no rule at all.
+firewall_rule_start_ip_address = "0.0.0.0"
+firewall_rule_end_ip_address   = "255.255.255.255"
 
-# Terraform signs in to PostgreSQL as this principal to mark the roles below as
-# Entra identities, with a token of the identity it runs as, so this has to be
-# that identity or a group it belongs to. A group is the easier of the two,
-# because it keeps working when the identity running Terraform changes:
+# Terraform signs in to PostgreSQL as this principal to mark the workload
+# identity role below as an Entra identity, with a token of the identity it runs
+# as, so this has to be that identity or a group it belongs to. A group is the
+# easier of the two, because it keeps working when the identity running
+# Terraform changes:
 #
 #   az ad group show --group sg-postgresql-admins --query id -o tsv
 #
@@ -86,54 +87,17 @@ entra_administrator = {
   principal_type = "User"
 }
 
-databases = [
-  # Username and password owner. The owner role defaults to <database>_owner, so
-  # orders_owner here.
-  {
-    name = "orders"
-  },
+# The managed identity of the application. name becomes the name of the
+# PostgreSQL role and is what Entra ID resolves at sign in, so it is the display
+# name of the identity rather than its application id.
+#
+#   az identity show --name id-billing-app --resource-group rg-billing --query principalId -o tsv
+workload_identity = {
+  name      = "id-billing-app"
+  object_id = "5c9d1f2e-7a44-4b1c-9f83-2d6e0a7b1c45"
+}
 
-  # Username and password owner under a name of its own, with a Microsoft Entra
-  # workload identity standing next to it as a member of that owner role. Both
-  # logins reach the same database with the same rights, so the application team
-  # can move from the password to the identity whenever they are ready, and
-  # owner_login = false then retires the password.
-  #   az identity show --name id-billing-app --resource-group rg-billing --query principalId -o tsv
-  {
-    name           = "billing"
-    owner_username = "billing_app"
-
-    owner_members = [
-      {
-        name = "id-billing-app"
-        entra_principal = {
-          object_id = "5c9d1f2e-7a44-4b1c-9f83-2d6e0a7b1c45"
-          type      = "service"
-        }
-      },
-    ]
-  },
-
-  # Owned by an Entra ID group: everybody in the group gets full access to the
-  # database, and nobody needs a password.
-  #   az ad group show --group sg-analytics-db-owners --query id -o tsv
-  {
-    name = "analytics"
-    entra_principal = {
-      name      = "sg-analytics-db-owners"
-      object_id = "f51ee4ed-6c2d-42ee-9ba7-a08814b047ec"
-      type      = "group"
-    }
-  },
-
-  # Owned by the managed identity of a workload.
-  #   az identity show --name id-reporting --resource-group rg-reporting --query principalId -o tsv
-  {
-    name = "reporting"
-    entra_principal = {
-      name      = "id-reporting"
-      object_id = "831b3ba3-03cc-4270-b7e6-5905683c847f"
-      type      = "service"
-    }
-  },
-]
+# Turn this off once the application signs in as the workload identity only. The
+# owner role keeps owning the database and everything in it, but it can no
+# longer sign in, and its password and Key Vault secret stop existing.
+owner_login = true

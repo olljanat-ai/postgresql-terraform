@@ -27,12 +27,12 @@ variable "postgresql_version" {
   validation {
     # From PostgreSQL 15 onwards the public schema is owned by
     # pg_database_owner and PUBLIC no longer has CREATE on it, which is what
-    # makes a database owner have full rights on its own database, and only on
+    # makes the database owner have full rights on its own database, and only on
     # that one, without any further grants. On older versions public is owned by
     # the bootstrap superuser and is writable by everybody, so the isolation
     # this configuration promises would not hold.
     condition     = tonumber(var.postgresql_version) >= 15
-    error_message = "postgresql_version has to be 15 or newer: on older versions the public schema is writable by every role, so the databases would not be isolated from each other."
+    error_message = "postgresql_version has to be 15 or newer: on older versions the public schema is writable by every role, so the database would not be isolated."
   }
 }
 
@@ -61,7 +61,7 @@ variable "backup_retention_days" {
 }
 
 variable "administrator_login" {
-  description = "Login of the built-in PostgreSQL administrator. Terraform uses it to create the databases and their owners."
+  description = "Login of the built-in PostgreSQL administrator. Terraform uses it to create the database and its roles."
   type        = string
   default     = "pgadmin"
 }
@@ -73,141 +73,87 @@ variable "administrator_password" {
 }
 
 variable "public_network_access_enabled" {
-  description = "Whether the server is reachable from the public internet. Terraform needs network access to the server to manage databases and roles."
+  description = "Whether the server is reachable from the public internet. Terraform needs network access to the server to manage the database and its roles."
   type        = bool
   default     = true
 }
 
-variable "firewall_rules" {
-  description = "Firewall rules to create on the server, keyed by rule name. At least the address Terraform runs from has to be allowed when public network access is used."
-  type = map(object({
-    start_ip_address = string
-    end_ip_address   = string
-  }))
-  default = {}
+variable "firewall_rule_name" {
+  description = "Name of the firewall rule created on the server."
+  type        = string
+  default     = "terraform"
+}
+
+variable "firewall_rule_start_ip_address" {
+  description = "First address the firewall rule allows in. Leave it and firewall_rule_end_ip_address unset to create no rule at all, which is what a server reached over a private endpoint wants."
+  type        = string
+  default     = null
+}
+
+variable "firewall_rule_end_ip_address" {
+  description = "Last address the firewall rule allows in."
+  type        = string
+  default     = null
 }
 
 variable "entra_administrator" {
-  description = <<-EOT
-    Microsoft Entra ID principal that becomes an administrator of the server. Required when any database is owned by an Entra ID identity, because only an Entra administrator may mark a role as an Entra principal.
-
-    Terraform signs in to PostgreSQL as this role to write those marks, with a token of the identity it runs as, so this has to be either that very identity or a group it is a member of. A group is the easier of the two: it survives a change of the identity that runs Terraform, and its token type matches both a user and a service principal.
-
-    `principal_name` is the user principal name of a user and the display name of a group or a service principal.
-  EOT
-
+  description = "Entra principal that becomes a Microsoft Entra administrator of the server. Terraform signs in as this principal to mark the workload identity role as an Entra principal, which only an Entra administrator may do, so it has to be the identity Terraform runs as or a group that identity belongs to."
   type = object({
     object_id      = string
     principal_name = string
     principal_type = optional(string, "User")
   })
-  default = null
 
   validation {
-    condition     = contains(["User", "Group", "ServicePrincipal"], try(var.entra_administrator.principal_type, "User"))
+    condition     = contains(["User", "Group", "ServicePrincipal"], var.entra_administrator.principal_type)
     error_message = "entra_administrator.principal_type must be one of User, Group or ServicePrincipal."
   }
 }
 
-variable "databases" {
-  description = <<-EOT
-    Databases to create. Every database gets its own owner role, which has full permissions on that database and no permissions on the other ones.
+variable "database_name" {
+  description = "Name of the database this configuration creates."
+  type        = string
+}
 
-    The owner is either a PostgreSQL role authenticated with a username and a generated password (the default), named `owner_username` or `<name>_owner` when that is left unset, or a Microsoft Entra ID identity when `entra_principal` is set.
+variable "database_charset" {
+  description = "Encoding of the database."
+  type        = string
+  default     = "UTF8"
+}
 
-    `entra_principal.name` becomes the name of the role, and Entra ID resolves it when the identity signs in, so it has to be the user principal name for a user and the display name for a group or a service principal. `entra_principal.object_id` is the Entra object id of the identity, and for an application it is the object id of its service principal rather than of the application itself.
+variable "database_collation" {
+  description = "Collation of the database."
+  type        = string
+  default     = "en_US.utf8"
+}
 
-    `owner_members` adds further login roles to the same database. A member is granted the owner role and switches to it at login, so it has exactly the rights of the owner and everything it creates is owned by the owner role. Each member authenticates on its own: with a generated password, or as an Entra identity when `entra_principal` is set on it. That is how one database can be reached both with a username and a password and with an Entra workload identity at the same time, which is what a migration from the one to the other needs.
+variable "owner_username" {
+  description = "Name of the role that owns the database and authenticates with a generated password. Defaults to <database_name>_owner."
+  type        = string
+  default     = null
+}
 
-    A member's `name` is the name of its PostgreSQL role, and for an Entra member it therefore has to be the name Entra ID resolves at sign in, the same rule as for `entra_principal.name` above.
+variable "owner_login" {
+  description = "Whether the owner role itself signs in. Set it to false once the application has moved to the workload identity: the owner role keeps owning the database and everything in it, but it can no longer sign in, and its generated password and Key Vault secret stop existing."
+  type        = bool
+  default     = true
+}
 
-    `owner_login` turns the owner role itself into a role that only holds the ownership: no password, no sign in. Set it to false once every application has moved to a member, so that the shared owner password stops existing.
-  EOT
-
-  type = list(object({
-    name           = string
-    charset        = optional(string, "UTF8")
-    collation      = optional(string, "en_US.utf8")
-    owner_username = optional(string)
-    owner_login    = optional(bool, true)
-    entra_principal = optional(object({
-      name      = string
-      object_id = string
-      type      = optional(string, "user")
-    }))
-    owner_members = optional(list(object({
-      name = string
-      entra_principal = optional(object({
-        object_id = string
-        type      = optional(string, "user")
-      }))
-    })), [])
-  }))
-  default = []
-
-  validation {
-    condition     = length(distinct([for db in var.databases : db.name])) == length(var.databases)
-    error_message = "Database names must be unique."
-  }
-
-  validation {
-    condition = alltrue([
-      for db in var.databases :
-      contains(["user", "group", "service"], try(db.entra_principal.type, "user"))
-    ])
-    error_message = "databases[*].entra_principal.type must be one of user, group or service."
-  }
-
-  validation {
-    condition = alltrue([
-      for db in var.databases : alltrue([
-        for member in db.owner_members :
-        contains(["user", "group", "service"], try(member.entra_principal.type, "user"))
-      ])
-    ])
-    error_message = "databases[*].owner_members[*].entra_principal.type must be one of user, group or service."
-  }
-
-  validation {
-    condition = alltrue([
-      for db in var.databases :
-      db.entra_principal == null || db.owner_username == null
-    ])
-    error_message = "Set either owner_username or entra_principal on a database, not both: an Entra owned role is named after the identity, so owner_username would be ignored."
-  }
-
-  # An owner that does not sign in is only reachable through its members, so a
-  # database with neither would be created and then be unreachable by anything
-  # but the server administrator.
-  validation {
-    condition = alltrue([
-      for db in var.databases :
-      db.owner_login || db.entra_principal != null || length(db.owner_members) > 0
-    ])
-    error_message = "A database with owner_login = false needs at least one entry in owner_members, otherwise nothing can sign in to it."
-  }
-
-  # Every role lives in one namespace on the server, so a name reused across
-  # databases would make the second database silently share the first one's
-  # role instead of getting one of its own.
-  validation {
-    condition = length(distinct(flatten([
-      for db in var.databases : concat(
-        [db.entra_principal != null ? db.entra_principal.name : coalesce(db.owner_username, "${db.name}_owner")],
-        [for member in db.owner_members : member.name],
-      )
-      ]))) == length(flatten([
-      for db in var.databases : concat(
-        [db.entra_principal != null ? db.entra_principal.name : coalesce(db.owner_username, "${db.name}_owner")],
-        [for member in db.owner_members : member.name],
-      )
-    ]))
-    error_message = "Role names must be unique across all databases: owner roles and owner_members share one namespace on the server."
-  }
+variable "workload_identity" {
+  description = "Microsoft Entra workload identity that gets the same access to the database as the owner. It is a login role of its own, granted the owner role, so it and the password authenticated owner reach the database side by side and an application can move from the one to the other whenever it is ready."
+  type = object({
+    # The name of the role, which Entra ID resolves when the identity signs in,
+    # so it has to be the display name of the managed identity or the service
+    # principal rather than its application id.
+    name = string
+    # The object id of the service principal of the identity:
+    #   az identity show --name <name> --resource-group <rg> --query principalId -o tsv
+    object_id = string
+  })
 }
 
 variable "revoke_public_connect" {
-  description = "Revoke the CONNECT privilege of the PUBLIC role on every managed database, so that only the database owner and the administrators can connect to it."
+  description = "Revoke the CONNECT privilege of the PUBLIC role on the database, so that only its owner, the workload identity and the administrators can connect to it."
   type        = bool
   default     = true
 }
@@ -219,7 +165,7 @@ variable "tags" {
 }
 
 variable "key_vault_name" {
-  description = "Name of the Azure Key Vault the generated owner passwords are written to. Has to be globally unique. Leave it unset to skip the vault entirely, in which case the passwords are only available in the state and through the owner_passwords output."
+  description = "Name of the Azure Key Vault the generated owner password is written to. Has to be globally unique. Leave it unset to skip the vault entirely, in which case the password is only available in the state and through the owner_password output."
   type        = string
   default     = null
 
@@ -270,7 +216,7 @@ variable "key_vault_grant_deployer_access" {
 }
 
 variable "key_vault_store_administrator_password" {
-  description = "Also store administrator_password in the vault, next to the generated owner passwords. It is not generated here, but keeping it with them makes the vault the single place holding the credentials of the server."
+  description = "Also store administrator_password in the vault, next to the generated owner password. It is not generated here, but keeping it there makes the vault the single place holding the credentials of the server."
   type        = bool
   default     = true
 }
