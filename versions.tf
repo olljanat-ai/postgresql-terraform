@@ -6,9 +6,11 @@ terraform {
       source  = "hashicorp/azurerm"
       version = ">= 4.0"
     }
+    # 1.25 is the first release carrying postgresql_security_label, which is how
+    # a role is turned into a Microsoft Entra principal here.
     postgresql = {
       source  = "cyrilgdn/postgresql"
-      version = ">= 1.22"
+      version = ">= 1.25"
     }
     random = {
       source  = "hashicorp/random"
@@ -49,4 +51,29 @@ provider "postgresql" {
   password  = var.administrator_password
   sslmode   = "require"
   superuser = false
+}
+
+# Marking a role as a Microsoft Entra principal is a SECURITY LABEL statement,
+# and only a Microsoft Entra administrator of the server may run it, so those
+# statements go over a second connection that signs in with an Entra access
+# token. The provider asks for the token itself, through the same credential
+# chain the azurerm provider uses, so nothing here shells out to psql or to the
+# Azure CLI.
+#
+# Without Entra owners this connection has nothing to do. It then falls back to
+# the administrator and its password, which keeps an environment that uses no
+# Entra ID from needing an Azure identity that can sign in to PostgreSQL at all.
+provider "postgresql" {
+  alias = "entra"
+
+  host      = "${var.server_name}.postgres.database.azure.com"
+  port      = 5432
+  sslmode   = "require"
+  superuser = false
+
+  username = var.entra_administrator != null ? var.entra_administrator.principal_name : var.administrator_login
+  password = var.entra_administrator != null ? null : var.administrator_password
+
+  azure_identity_auth = var.entra_administrator != null
+  azure_tenant_id     = var.entra_administrator != null ? data.azurerm_client_config.current.tenant_id : null
 }

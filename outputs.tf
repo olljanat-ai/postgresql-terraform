@@ -24,17 +24,18 @@ output "administrator_login" {
 }
 
 output "databases" {
-  description = "Created databases and their owner role, keyed by database name."
+  description = "Created databases, their owner role and how that owner authenticates, keyed by database name."
   value = {
     for name, db in local.databases : name => {
-      name  = name
-      owner = postgresql_role.owner[name].name
+      name           = name
+      owner          = local.owner_role_names[name]
+      authentication = db.entra_principal == null ? "password" : "entra-id"
     }
   }
 }
 
 output "owner_passwords" {
-  description = "Generated passwords of the database owners, keyed by database name."
+  description = "Generated passwords of the database owners, keyed by database name. Only holds the databases whose owner authenticates with a username and a password."
   value       = { for name, password in random_password.owner : name => password.result }
   sensitive   = true
 }

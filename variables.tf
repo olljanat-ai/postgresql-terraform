@@ -87,11 +87,35 @@ variable "firewall_rules" {
   default = {}
 }
 
+variable "entra_administrator" {
+  description = <<-EOT
+    Microsoft Entra ID principal that becomes an administrator of the server. Required when any database is owned by an Entra ID identity, because only an Entra administrator may mark a role as an Entra principal.
+
+    Terraform signs in to PostgreSQL as this role to write those marks, with a token of the identity it runs as, so this has to be either that very identity or a group it is a member of. A group is the easier of the two: it survives a change of the identity that runs Terraform, and its token type matches both a user and a service principal.
+
+    `principal_name` is the user principal name of a user and the display name of a group or a service principal.
+  EOT
+
+  type = object({
+    object_id      = string
+    principal_name = string
+    principal_type = optional(string, "User")
+  })
+  default = null
+
+  validation {
+    condition     = contains(["User", "Group", "ServicePrincipal"], try(var.entra_administrator.principal_type, "User"))
+    error_message = "entra_administrator.principal_type must be one of User, Group or ServicePrincipal."
+  }
+}
+
 variable "databases" {
   description = <<-EOT
     Databases to create. Every database gets its own owner, which has full permissions on that database and no permissions on the other ones.
 
-    The owner is a PostgreSQL role authenticated with a username and a generated password. The role is named `owner_username`, or `<name>_owner` when that is left unset.
+    The owner is either a PostgreSQL role authenticated with a username and a generated password (the default), named `owner_username` or `<name>_owner` when that is left unset, or a Microsoft Entra ID identity when `entra_principal` is set.
+
+    `entra_principal.name` becomes the name of the role, and Entra ID resolves it when the identity signs in, so it has to be the user principal name for a user and the display name for a group or a service principal. `entra_principal.object_id` is the Entra object id of the identity, and for an application it is the object id of its service principal rather than of the application itself.
   EOT
 
   type = list(object({
@@ -99,12 +123,25 @@ variable "databases" {
     charset        = optional(string, "UTF8")
     collation      = optional(string, "en_US.utf8")
     owner_username = optional(string)
+    entra_principal = optional(object({
+      name      = string
+      object_id = string
+      type      = optional(string, "user")
+    }))
   }))
   default = []
 
   validation {
     condition     = length(distinct([for db in var.databases : db.name])) == length(var.databases)
     error_message = "Database names must be unique."
+  }
+
+  validation {
+    condition = alltrue([
+      for db in var.databases :
+      contains(["user", "group", "service"], try(db.entra_principal.type, "user"))
+    ])
+    error_message = "databases[*].entra_principal.type must be one of user, group or service."
   }
 }
 
