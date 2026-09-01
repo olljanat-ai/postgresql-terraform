@@ -31,6 +31,9 @@ sku_name           = "B_Standard_B2s"
 #   az keyvault secret show --vault-name kv-psql-prototype-0001 \
 #     --name orders-owner --query value -o tsv
 #
+# terraform output login_roles maps every role that can sign in to its database,
+# how it authenticates and the secret holding its password.
+#
 # Terraform gives itself the Key Vault Secrets Officer role on the vault, which
 # needs the identity it runs as to be allowed to create role assignments (Owner
 # or User Access Administrator on the resource group or the subscription). Set
@@ -90,10 +93,25 @@ databases = [
     name = "orders"
   },
 
-  # Username and password owner under a name of its own.
+  # Username and password owner under a name of its own, with a Microsoft Entra
+  # workload identity standing next to it as a member of that owner role. Both
+  # logins reach the same database with the same rights, so the application team
+  # can move from the password to the identity whenever they are ready, and
+  # owner_login = false then retires the password.
+  #   az identity show --name id-billing-app --resource-group rg-billing --query principalId -o tsv
   {
     name           = "billing"
     owner_username = "billing_app"
+
+    owner_members = [
+      {
+        name = "id-billing-app"
+        entra_principal = {
+          object_id = "5c9d1f2e-7a44-4b1c-9f83-2d6e0a7b1c45"
+          type      = "service"
+        }
+      },
+    ]
   },
 
   # Owned by an Entra ID group: everybody in the group gets full access to the

@@ -11,6 +11,10 @@ An owner is either
   connects with an Entra access token instead of a password.
 
 The two cases can be mixed on the same server, the choice is made per database.
+A database can also carry both at once: `owner_members` adds further login roles
+to it, each authenticating its own way, which is what lets an application move
+from a username and a password to an Entra workload identity while both keep
+working. See [More than one login per database](#more-than-one-login-per-database).
 
 The generated owner passwords are written into an Azure Key Vault, so that the
 applications using the databases have somewhere to read them from that is not
@@ -105,6 +109,113 @@ metadata endpoint instead of the Azure CLI.
   including the owners of the other databases, could connect to all of them.
 * Only the server administrator, which Terraform itself uses, can reach every
   database.
+* An `owner_members` role is granted the owner role and switches to it at login
+  (`ALTER ROLE ... SET ROLE`), so it has the rights of the owner on that one
+  database and nothing anywhere else, and everything it creates is owned by the
+  owner role rather than by itself.
+
+## More than one login per database
+
+A PostgreSQL database has exactly one owner: `pg_database.datdba` holds a single
+role. Several identities reach one database by being **members of that owner
+role**, which is what `owner_members` creates. A member passes every ownership
+check, because PostgreSQL tests ownership with `has_privs_of_role(current_user,
+owner)` rather than `current_user = owner`, and that includes the
+`pg_database_owner` membership that carries the `public` schema.
+
+Each member authenticates on its own, so the same database can be reached with a
+username and a password and with an Entra workload identity at the same time:
+
+```hcl
+databases = [
+  {
+    name           = "billing"
+    owner_username = "billing_app"
+
+    owner_members = [
+      {
+        name = "id-billing-app"
+        entra_principal = {
+          object_id = "831b3ba3-03cc-4270-b7e6-5905683c847f"
+          type      = "service"
+        }
+      },
+    ]
+  },
+]
+```
+
+That is:
+
+```sql
+CREATE ROLE "id-billing-app" LOGIN;
+SECURITY LABEL FOR "pgaadauth" ON ROLE "id-billing-app"
+  IS 'aadauth,oid=831b3ba3-03cc-4270-b7e6-5905683c847f,type=service';
+GRANT billing_app TO "id-billing-app";
+ALTER ROLE "id-billing-app" SET ROLE billing_app;
+```
+
+The database itself does not change hands, so nothing has to be reassigned and
+the application using `billing_app` and its password keeps working untouched.
+
+`terraform output login_roles` lists every role that can sign in, which database
+it reaches, how it authenticates and where its password is:
+
+```json
+{
+  "billing_app":     { "database": "billing", "membership": "owner",  "authentication": "password", "secret": "billing-app" },
+  "id-billing-app":  { "database": "billing", "membership": "member", "authentication": "entra-id", "secret": null }
+}
+```
+
+### Moving an application to an Entra workload identity
+
+1. Add the workload identity to `owner_members` as above and apply. Both logins
+   now work, and the application is unchanged.
+2. The application team switches its connection to the identity: user
+   `id-billing-app`, and an access token from the instance metadata endpoint as
+   the password. No password is involved and nothing has to be read from the
+   Key Vault.
+3. Once nothing signs in as `billing_app` any more, set `owner_login = false` on
+   the database and apply. The owner role keeps owning the database and its
+   objects, but it can no longer sign in, and its generated password and its
+   Key Vault secret are gone.
+
+```hcl
+{
+  name           = "billing"
+  owner_username = "billing_app"
+  owner_login    = false
+
+  owner_members = [
+    {
+      name            = "id-billing-app"
+      entra_principal = { object_id = "831b3ba3-...", type = "service" }
+    },
+  ]
+}
+```
+
+Step 3 is reversible: setting `owner_login` back to true generates a new
+password and writes it to the vault again. The old secret is soft deleted rather
+than removed though, so on a vault with `key_vault_purge_protection_enabled` the
+name stays reserved until the retention period runs out, and the write fails
+until it is recovered or purged.
+
+### Objects created before the members existed
+
+`assume_role` only affects what a member creates from now on. Tables that the
+owner role itself created are already owned by the owner role, which is what
+every member switches to, so they need nothing. But if a database was reaching
+this configuration from somewhere else and its objects are owned by some other
+role, hand them over once, as that role or as the administrator:
+
+```sql
+REASSIGN OWNED BY <old role> TO billing_app;
+```
+
+Terraform does not do this: it is a one-off migration of data that already
+exists, not part of the desired state.
 
 ## Where the passwords are kept
 
@@ -267,6 +378,17 @@ acquires a token, so it needs no Entra identity that can sign in to PostgreSQL.
 | `entra_principal.name`      | User principal name of a user, or display name of a group or a managed identity.          | n/a              |
 | `entra_principal.object_id` | Entra object id of the identity.                                                          | n/a              |
 | `entra_principal.type`      | `user`, `group` or `service`.                                                             | `"user"`         |
+| `owner_login`               | Whether the owner role itself signs in. `false` leaves it holding the ownership only.     | `true`           |
+| `owner_members`             | Further login roles granted the owner role, so that one database has several logins.      | `[]`             |
+
+### `databases[*].owner_members`
+
+| Field                       | Description                                                                               | Default  |
+| --------------------------- | ----------------------------------------------------------------------------------------- | -------- |
+| `name`                      | Name of the role. For an Entra member this is the name Entra ID resolves at sign in.      | n/a      |
+| `entra_principal`           | Set this to make the member an Entra ID identity instead of a password authenticated role. | `null`   |
+| `entra_principal.object_id` | Entra object id of the identity.                                                          | n/a      |
+| `entra_principal.type`      | `user`, `group` or `service`.                                                             | `"user"` |
 
 ### `entra_administrator`
 
@@ -285,12 +407,15 @@ acquires a token, so it needs no Entra identity that can sign in to PostgreSQL.
 | `server_name`         | Name of the server.                                                         |
 | `fqdn`                | Host name of the server.                                                    |
 | `administrator_login` | Login of the built-in administrator.                                        |
-| `databases`           | Databases, their owner and how that owner authenticates.                    |
+| `databases`           | Databases, their owner, how that owner authenticates and its members.       |
+| `login_roles`         | Every role that can sign in, per role name: database, membership, authentication and secret. |
 | `owner_passwords`     | Generated owner passwords, per database, for the password case (sensitive). |
+| `member_passwords`    | Generated `owner_members` passwords, per role name (sensitive).             |
 | `key_vault_id`        | Resource id of the Key Vault, `null` when no vault is created.              |
 | `key_vault_name`      | Name of the Key Vault, `null` when no vault is created.                     |
 | `key_vault_uri`       | Data plane URI of the Key Vault, `null` when no vault is created.           |
 | `owner_password_secrets` | Name of the secret holding each owner password, per database.            |
+| `member_password_secrets` | Name of the secret holding each member password, per role name.         |
 | `administrator_password_secret` | Name of the secret holding the administrator password.            |
 
 ## Notes

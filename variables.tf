@@ -111,11 +111,17 @@ variable "entra_administrator" {
 
 variable "databases" {
   description = <<-EOT
-    Databases to create. Every database gets its own owner, which has full permissions on that database and no permissions on the other ones.
+    Databases to create. Every database gets its own owner role, which has full permissions on that database and no permissions on the other ones.
 
     The owner is either a PostgreSQL role authenticated with a username and a generated password (the default), named `owner_username` or `<name>_owner` when that is left unset, or a Microsoft Entra ID identity when `entra_principal` is set.
 
     `entra_principal.name` becomes the name of the role, and Entra ID resolves it when the identity signs in, so it has to be the user principal name for a user and the display name for a group or a service principal. `entra_principal.object_id` is the Entra object id of the identity, and for an application it is the object id of its service principal rather than of the application itself.
+
+    `owner_members` adds further login roles to the same database. A member is granted the owner role and switches to it at login, so it has exactly the rights of the owner and everything it creates is owned by the owner role. Each member authenticates on its own: with a generated password, or as an Entra identity when `entra_principal` is set on it. That is how one database can be reached both with a username and a password and with an Entra workload identity at the same time, which is what a migration from the one to the other needs.
+
+    A member's `name` is the name of its PostgreSQL role, and for an Entra member it therefore has to be the name Entra ID resolves at sign in, the same rule as for `entra_principal.name` above.
+
+    `owner_login` turns the owner role itself into a role that only holds the ownership: no password, no sign in. Set it to false once every application has moved to a member, so that the shared owner password stops existing.
   EOT
 
   type = list(object({
@@ -123,11 +129,19 @@ variable "databases" {
     charset        = optional(string, "UTF8")
     collation      = optional(string, "en_US.utf8")
     owner_username = optional(string)
+    owner_login    = optional(bool, true)
     entra_principal = optional(object({
       name      = string
       object_id = string
       type      = optional(string, "user")
     }))
+    owner_members = optional(list(object({
+      name = string
+      entra_principal = optional(object({
+        object_id = string
+        type      = optional(string, "user")
+      }))
+    })), [])
   }))
   default = []
 
@@ -142,6 +156,53 @@ variable "databases" {
       contains(["user", "group", "service"], try(db.entra_principal.type, "user"))
     ])
     error_message = "databases[*].entra_principal.type must be one of user, group or service."
+  }
+
+  validation {
+    condition = alltrue([
+      for db in var.databases : alltrue([
+        for member in db.owner_members :
+        contains(["user", "group", "service"], try(member.entra_principal.type, "user"))
+      ])
+    ])
+    error_message = "databases[*].owner_members[*].entra_principal.type must be one of user, group or service."
+  }
+
+  validation {
+    condition = alltrue([
+      for db in var.databases :
+      db.entra_principal == null || db.owner_username == null
+    ])
+    error_message = "Set either owner_username or entra_principal on a database, not both: an Entra owned role is named after the identity, so owner_username would be ignored."
+  }
+
+  # An owner that does not sign in is only reachable through its members, so a
+  # database with neither would be created and then be unreachable by anything
+  # but the server administrator.
+  validation {
+    condition = alltrue([
+      for db in var.databases :
+      db.owner_login || db.entra_principal != null || length(db.owner_members) > 0
+    ])
+    error_message = "A database with owner_login = false needs at least one entry in owner_members, otherwise nothing can sign in to it."
+  }
+
+  # Every role lives in one namespace on the server, so a name reused across
+  # databases would make the second database silently share the first one's
+  # role instead of getting one of its own.
+  validation {
+    condition = length(distinct(flatten([
+      for db in var.databases : concat(
+        [db.entra_principal != null ? db.entra_principal.name : coalesce(db.owner_username, "${db.name}_owner")],
+        [for member in db.owner_members : member.name],
+      )
+      ]))) == length(flatten([
+      for db in var.databases : concat(
+        [db.entra_principal != null ? db.entra_principal.name : coalesce(db.owner_username, "${db.name}_owner")],
+        [for member in db.owner_members : member.name],
+      )
+    ]))
+    error_message = "Role names must be unique across all databases: owner roles and owner_members share one namespace on the server."
   }
 }
 
