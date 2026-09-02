@@ -133,6 +133,11 @@ handed out but a property a role has.
    objects in it meet. So the owner has full rights in its own database, and
    only in that one. `postgresql_version` is validated to be 15 or newer for
    this reason.
+5. **Objects that were already there.** Every table carries an owner of its own,
+   and one created before this configuration took the database over keeps it, so
+   the four steps above can all be right while reading such a table still fails.
+   [Objects that already exist](#objects-that-already-exist) hands them over,
+   once, and nothing created afterwards needs it.
 
 ### Why the `public` schema is handed to the owner role
 
@@ -345,17 +350,124 @@ those roles are members of the owner role.
 
 ### Objects that already exist
 
-`ALTER ROLE ... SET ROLE` only affects what is created from now on. If the
-database is reaching this configuration from somewhere else and its objects are
-owned by some other role, hand them over once, as that role or as the
-administrator:
+`postgresql_schema.public` hands over the *schema*, and `ALTER ROLE ... SET ROLE`
+decides who owns whatever is created **from now on**. Neither touches a table
+that is already there: a table keeps the owner it was created with and the ACL
+that came with it. A database adopted from somewhere else therefore comes out of
+the apply able to create and drop tables of its own, and unable to read the ones
+it arrived with:
 
-```sql
-REASSIGN OWNED BY <old role> TO billing_app;
+```
+ERROR:  permission denied for table orders
 ```
 
-Terraform does not do this: it is a one-off migration of data that already
-exists, not part of the desired state.
+That is one layer below the schema, and no amount of schema ownership reaches
+it. `ALTER SCHEMA public OWNER TO billing_app` rewrites `pg_namespace`, which
+decides who may create objects in the schema and nothing else. Every table
+carries its own owner in `pg_class.relowner` and its own grants in
+`pg_class.relacl`, and on a table that predates the adoption the owner role
+appears in neither.
+
+It splits by who created an object rather than by when. Anything the owner role
+or the workload identity creates is owned by `billing_app`, because the identity
+`SET ROLE`s into it at sign in, so new objects are right by construction and
+need nothing here — including new objects created long after the migration.
+Anything created by a third login that is not a member of the owner role lands
+in the same trap as the old tables, whether that happens today or next year.
+
+Read which objects are on which side, in the database itself:
+
+```sql
+SELECT c.relname,
+       CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'partitioned table'
+                      WHEN 'v' THEN 'view'  WHEN 'm' THEN 'materialized view'
+                      WHEN 'S' THEN 'sequence' END AS kind,
+       pg_get_userbyid(c.relowner) AS owner
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
+ORDER BY owner, kind, c.relname;
+```
+
+Every row already reading `billing_app` is fine. The rest is a one-off hand
+over, run in that database as the administrator, and there are two versions of
+it depending on what the old owner is.
+
+**An ordinary role** — the previous application login, a migration user, the
+administrator itself — hands over everything it owns in one statement, tables,
+sequences, views and functions alike:
+
+```sql
+REASSIGN OWNED BY app_legacy TO billing_app;
+```
+
+It acts on the connected database only, so connect to `billing` rather than to
+`postgres` first. The role running it has to be a member of both roles: it is a
+member of `billing_app` through `postgresql_grant_role.owner_to_administrator`,
+and `GRANT app_legacy TO pgadmin;` gives it the other half. `REASSIGN OWNED`
+leaves the old role owning nothing, which is what makes it droppable afterwards.
+
+**`azure_pg_admin`**, which is where a database created over the Azure API and
+then filled in by hand leaves them, is the case where `REASSIGN OWNED BY` is the
+wrong tool: it would sweep up whatever else in that database belongs to Azure's
+own extensions along with the application's tables. Name the objects instead:
+
+```sql
+DO $$
+DECLARE
+  obj record;
+BEGIN
+  FOR obj IN
+    SELECT c.oid::regclass AS ident,
+           CASE c.relkind WHEN 'S' THEN 'SEQUENCE'
+                          WHEN 'v' THEN 'VIEW'
+                          WHEN 'm' THEN 'MATERIALIZED VIEW'
+                          ELSE 'TABLE' END AS kind
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
+      AND c.relowner <> 'billing_app'::regrole
+  LOOP
+    EXECUTE format('ALTER %s %s OWNER TO billing_app', obj.kind, obj.ident);
+  END LOOP;
+END
+$$;
+```
+
+Indexes, constraints and TOAST tables follow their table and are left out on
+purpose. A sequence behind a `serial` or an identity column follows its table
+too, so the loop reaches some of them after they have already moved, which is a
+statement that changes nothing rather than an error. Functions, procedures and
+types are separate objects that the query above does not list; where the
+database has any, the same loop over `pg_proc` and `pg_type` moves them with
+`ALTER ROUTINE ... OWNER TO` and `ALTER TYPE ... OWNER TO`.
+
+Objects in a schema other than `public` need the schema handing over as well —
+`postgresql_schema.public` covers the one schema it names — and then the same
+loop with that schema in place of `public`.
+
+**Terraform does not do this, and the provider offers no way to.** There is no
+resource for `REASSIGN OWNED`, and the objects are data that already exists
+rather than desired state: what they are owned by now is knowable only by
+looking in the database. `alter_object_ownership` on `postgresql_database` is
+the nearest thing and does not reach this case either, because it runs only in
+the apply that changes the database owner and reassigns as the previous owner.
+The hand over is run once, when the database is adopted, and everything created
+after it is owned by the owner role already.
+
+Rerun the query above afterwards: every row should read `billing_app`. Then read
+a table over the failing connection itself, as the role that failed, because
+that is the thing that was actually broken:
+
+```sql
+SELECT count(*) FROM orders;
+```
+
+`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO
+billing_app` gets the reads and writes going and is worth avoiding for the same
+reason as everywhere else here: it covers the tables that exist at the moment it
+runs and no other, and it leaves the owner role unable to `ALTER` or `DROP` any
+of them, so the reads work and the next schema migration fails instead. The
+ownership is the fix.
 
 ## Troubleshooting
 
@@ -493,6 +605,42 @@ the next thing that rests on ownership fails in turn, whether that is revoking
 `CONNECT` from `PUBLIC`, adding the workload identity as a member of the owner,
 or dropping the owner role once the application has moved. The ownership is the
 fix.
+
+### `permission denied for table ...`
+
+Creating a table works, and reading one that was already there does not:
+
+```
+ERROR:  permission denied for table orders
+```
+
+Nothing regressed to get here. This is the next wall behind [`permission denied
+for schema public`](#permission-denied-for-schema-public): handing the schema to
+the owner role is what lets a session reach a table at all, and the tables that
+were in the database before it was adopted still carry the owner and the grants
+they were created with.
+
+The schema and the table are two different objects with two different owners.
+`ALTER SCHEMA public OWNER TO billing_app` decides who may create things in the
+schema; `pg_class.relowner` and `pg_class.relacl` decide who may read and write
+one particular table, and on a table older than the adoption the owner role is
+in neither:
+
+```sql
+SELECT pg_get_userbyid(relowner) AS table_owner, relacl
+FROM pg_class WHERE oid = 'public.orders'::regclass;
+```
+
+`table_owner` reads the role that created the table — an old application login,
+a migration user, or `azure_pg_admin` on a database filled in through the Azure
+portal — and `relacl` is either empty, which means the owner and nobody else, or
+lists roles that do not include `billing_app`.
+
+Only objects that predate the adoption are affected, and only those. Anything
+the owner role or the workload identity creates from here on is owned by
+`billing_app`, which is why the same session can create and drop tables of its
+own while these ones refuse it. [Objects that already
+exist](#objects-that-already-exist) is the one-off hand over that settles them.
 
 ## Where the passwords are kept
 
