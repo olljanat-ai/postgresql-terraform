@@ -126,11 +126,57 @@ handed out but a property a role has.
    owner holding `CONNECT`, `CREATE` and `TEMPORARY` in the database ACL, in an
    entry of its own. Revoking everything from `PUBLIC` therefore locks out every
    other role on the server without touching the owner.
-4. **Everything inside the database.** From PostgreSQL 15 onwards the `public`
-   schema is owned by `pg_database_owner`, an implicit role whose membership is
-   whoever owns the connected database, and `PUBLIC` no longer has `CREATE` on
-   it. So the owner has full rights in its own database, and only in that one.
-   `postgresql_version` is validated to be 15 or newer for this reason.
+4. **Everything inside the database.** From PostgreSQL 15 onwards `PUBLIC` has
+   no `CREATE` on the `public` schema, so who owns that schema decides who may
+   create anything at all. `postgresql_schema.public` gives it to the owner
+   role, which is where the ownership of the database and the ownership of the
+   objects in it meet. So the owner has full rights in its own database, and
+   only in that one. `postgresql_version` is validated to be 15 or newer for
+   this reason.
+
+### Why the `public` schema is handed to the owner role
+
+A database created here has nothing wrong with its `public` schema: `template0`
+carries it owned by `pg_database_owner`, the implicit role that resolves to
+whoever owns the connected database, and that is the owner role already. Moving
+it to the owner role by name changes nothing about who may do what there.
+
+A database Azure created carries it owned by `azure_pg_admin` instead, with
+`pg_database_owner` nowhere in the ACL:
+
+```
+   schema_owner  |                      nspacl
+-----------------+---------------------------------------------------
+ azure_pg_admin  | {azure_pg_admin=UC/azure_pg_admin,=U/azure_pg_admin}
+```
+
+Owning the database then reaches into the schema nowhere. The owner role is
+left with the `USAGE` that `PUBLIC` carries, which is enough to read the schema
+and not to create in it, and the first `CREATE TABLE` fails with `permission
+denied for schema public` while every ownership above it is right. Anything
+adopted from Azure arrives in that state, whether it was created over the Azure
+Resource Manager API or came with the server.
+
+`postgresql_schema.public` settles both cases with the same statement, which the
+provider runs on an existing schema rather than creating one:
+
+```sql
+ALTER SCHEMA public OWNER TO billing_app;
+```
+
+The owner role rather than `pg_database_owner`, which would keep the schema
+following the database the way `template0` leaves it, because the provider hands
+an object over by first making the administrator a member of the role receiving
+it, and PostgreSQL refuses that: `pg_database_owner` has one member, implicit
+and situation dependent, and no explicit ones. In this database the two amount
+to the same role.
+
+The resource drops the schema when it is destroyed, and with `drop_cascade` off
+a `DROP SCHEMA public RESTRICT` would fail against a database holding anything,
+leaving `terraform destroy` stuck on a schema the database drop was about to
+take with it a moment later. It is on, so a destroy of this resource *alone*,
+with `-target` or by taking the block out, drops every table in the database
+with it.
 
 ### Why the database is created by the postgresql provider
 
@@ -280,9 +326,10 @@ import {
 ownership change, `ALTER DATABASE billing OWNER TO billing_app`, which the
 provider runs itself and which needs the administrator to be a member of the
 owner role — `postgresql_grant_role.owner_to_administrator` again. The `public`
-schema follows on its own from there, because `pg_database_owner` resolves to
-whoever owns the connected database. Drop the `import` block once the apply has
-gone through.
+schema does not follow on its own: a database Azure created has it owned by
+`azure_pg_admin` rather than by `pg_database_owner`, which is why
+`postgresql_schema.public` exists and hands it over in the same apply. Drop the
+`import` block once the apply has gone through.
 
 `alter_object_ownership` on `postgresql_database` looks like it would carry the
 existing objects across at the same time, and is better left off here: it
@@ -324,12 +371,13 @@ LINE 1: CREATE TABLE IF NOT EXISTS test ()
 Connecting proves that the role exists, that its password or token is accepted
 and that it holds `CONNECT` on the database. It proves nothing about ownership,
 and ownership is where every right *inside* the database comes from here. From
-PostgreSQL 15 onwards the `public` schema grants `CREATE` to `pg_database_owner`
-alone, and that resolves to whoever owns the database the session is connected
-to. The error therefore says that the session holds no `CREATE` on that schema,
-which is either because the role that signed in is neither the owner of this
-database nor a member of that owner, or because the schema is not the one
-PostgreSQL 15 sets up and grants nothing to `pg_database_owner` at all.
+PostgreSQL 15 onwards `PUBLIC` has no `CREATE` on the `public` schema, so the
+right comes from the schema's own owner: the owner role, once
+`postgresql_schema.public` has handed it over, or `pg_database_owner`, which
+resolves to whoever owns the database, on a schema still as `template0` left it.
+The error therefore says that the session holds no `CREATE` there, which is
+either because the role that signed in is neither that owner nor a member of it,
+or because the schema belongs to a role that grants the database owner nothing.
 
 Four values tell which of the four causes it is. Read them over the failing
 connection itself, as the role that fails and in the database it fails in, with
@@ -376,9 +424,9 @@ described in [Migrating a database created over the Azure
 API](#migrating-a-database-created-over-the-azure-api) rather than leaving the
 ownership change outside Terraform.
 
-**3. The `public` schema is owned by a role instead of `pg_database_owner`.**
-`schema_owner` should read `pg_database_owner`. On Azure it commonly reads this
-instead:
+**3. The `public` schema is owned by a role that grants the database owner
+nothing.** `schema_owner` should read the owner role. On a database Azure
+created it reads this instead:
 
 ```
    schema_owner  |                      nspacl
@@ -389,33 +437,35 @@ instead:
 `pg_database_owner` appears nowhere in that ACL, so owning the database reaches
 nothing: the owner role is left with the `USAGE` that the empty grantee, which
 is `PUBLIC`, carries, and that is enough to read the schema and not to create in
-it. Fixing the ownership of the database changes nothing on its own here.
+it. Fixing the ownership of the database changes nothing on its own here. A
+database restored from a dump taken on PostgreSQL 14 or older, or one whose
+schema was dropped and recreated by hand, lands in the same place.
 
-A database that Azure created rather than this configuration comes out this way,
-whether over the Azure Resource Manager API or as one of the databases the
-server is created with, and so does one restored from a dump taken on PostgreSQL
-14 or older, or one whose schema was dropped and recreated by hand. Restore the
-PostgreSQL 15 default, in that database, as the administrator:
+**An apply fixes this.** `postgresql_schema.public` hands the schema to the
+owner role, so a database adopted into this configuration is repaired by the
+first apply and stays that way, and the plan shows it as an update of that
+resource. Where the database is not managed here, or the apply cannot be run
+yet, the same statement by hand, in that database, as the administrator:
 
 ```sql
-ALTER SCHEMA public OWNER TO pg_database_owner;
+ALTER SCHEMA public OWNER TO billing_app;
 ```
 
 The statement asks two things of the role running it, and the administrator has
 both: it has to own the schema, which it does through its `azure_pg_admin`
-membership, and it has to be a member of `pg_database_owner`, which it is
-because it is a member of the role owning the database. Where the database
-owner is wrong as well, hand the database over first, or the second half of that
-is not true yet.
+membership, and it has to be able to become the owner role, which
+`postgresql_grant_role.owner_to_administrator` is what gives it. Where the
+database owner is wrong as well, hand the database over first: the owner role
+needs `CREATE` on the database to be given a schema in it, and owning the
+database is where it gets that.
 
 `ALTER SCHEMA ... OWNER` rewrites the grants the old owner made along with the
-ownership, so one statement is the whole of it, and the ACL afterwards is the
-one `template0`, which the database created here is cloned from, carries:
+ownership, so one statement is the whole of it:
 
 ```
-   schema_owner    |                          nspacl
--------------------+-----------------------------------------------------------
- pg_database_owner | {pg_database_owner=UC/pg_database_owner,=U/pg_database_owner}
+ schema_owner |                 nspacl
+--------------+-------------------------------------------
+ billing_app  | {billing_app=UC/billing_app,=U/billing_app}
 ```
 
 Only the connected database is touched: every other database on the server keeps
@@ -593,7 +643,8 @@ built-in administrator over the primary connection.
   `terraform apply -replace=random_password.owner[0]`.
 * Changing `owner_username` renames the owner role, which Terraform does with a
   drop and a create. Renaming it after the database exists therefore needs the
-  ownership moving by hand first.
+  ownership moving by hand first, the `public` schema of the database along with
+  the database itself.
 * An earlier revision of this configuration took a list of databases and created
   a role per entry. Moving state over from it means renaming the instances, for
   example `terraform state mv 'postgresql_role.owner["billing"]' postgresql_role.owner`.
