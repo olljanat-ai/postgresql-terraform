@@ -14,12 +14,6 @@ variable "location" {
   default     = "swedencentral"
 }
 
-variable "enable_telemetry" {
-  description = "Whether the Azure Verified Modules report their usage to Microsoft. The modules do it by attaching a deployment with a module specific identifier to the subscription, which carries no data about the resources themselves. See https://aka.ms/avm/telemetryinfo."
-  type        = bool
-  default     = true
-}
-
 variable "server_name" {
   description = "Name of the Azure Database for PostgreSQL flexible server. Has to be globally unique."
   type        = string
@@ -33,12 +27,12 @@ variable "postgresql_version" {
   validation {
     # From PostgreSQL 15 onwards the public schema is owned by
     # pg_database_owner and PUBLIC no longer has CREATE on it, which is what
-    # makes a database owner have full rights on its own database, and only on
+    # makes the database owner have full rights on its own database, and only on
     # that one, without any further grants. On older versions public is owned by
     # the bootstrap superuser and is writable by everybody, so the isolation
     # this configuration promises would not hold.
     condition     = tonumber(var.postgresql_version) >= 15
-    error_message = "postgresql_version has to be 15 or newer: on older versions the public schema is writable by every role, so the databases would not be isolated from each other."
+    error_message = "postgresql_version has to be 15 or newer: on older versions the public schema is writable by every role, so the database would not be isolated."
   }
 }
 
@@ -54,37 +48,6 @@ variable "zone" {
   default     = "1"
 }
 
-variable "high_availability" {
-  description = <<-EOT
-    High availability of the server, or null for a server without a standby.
-
-    Not every SKU and region offers it: the burstable SKUs, the `B_` prefixed ones, offer none, so a server on those has to set this to null.
-  EOT
-
-  type = object({
-    mode                      = string
-    standby_availability_zone = optional(string)
-  })
-  default = {
-    mode = "ZoneRedundant"
-  }
-
-  validation {
-    condition     = var.high_availability == null || contains(["SameZone", "ZoneRedundant"], try(var.high_availability.mode, ""))
-    error_message = "high_availability.mode has to be either SameZone or ZoneRedundant."
-  }
-}
-
-variable "maintenance_window" {
-  description = "Window Azure applies its maintenance in, or null to let Azure schedule it. `day_of_week` runs from 0, Sunday, to 6, and the start time is in UTC."
-  type = object({
-    day_of_week  = optional(string)
-    start_hour   = optional(number)
-    start_minute = optional(number)
-  })
-  default = null
-}
-
 variable "storage_mb" {
   description = "Storage allocated for the server, in megabytes."
   type        = number
@@ -98,7 +61,7 @@ variable "backup_retention_days" {
 }
 
 variable "administrator_login" {
-  description = "Login of the built-in PostgreSQL administrator. Terraform uses it to create the databases and their owners."
+  description = "Login of the built-in PostgreSQL administrator. Terraform uses it to create the database and its roles."
   type        = string
   default     = "pgadmin"
 }
@@ -110,55 +73,100 @@ variable "administrator_password" {
 }
 
 variable "public_network_access_enabled" {
-  description = "Whether the server is reachable from the public internet. Terraform needs network access to the server to manage databases and roles."
+  description = "Whether the server is reachable from the public internet. Terraform needs network access to the server to manage the database and its roles."
   type        = bool
   default     = true
 }
 
-variable "firewall_rules" {
-  description = "Firewall rules to create on the server, keyed by rule name. At least the address Terraform runs from has to be allowed when public network access is used."
-  type = map(object({
-    start_ip_address = string
-    end_ip_address   = string
-  }))
-  default = {}
+variable "firewall_rule_name" {
+  description = "Name of the firewall rule created on the server."
+  type        = string
+  default     = "terraform"
 }
 
-variable "databases" {
-  description = <<-EOT
-    Databases to create. Every database gets its own owner, which has full permissions on that database and no permissions on the other ones.
+variable "firewall_rule_start_ip_address" {
+  description = "First address the firewall rule allows in. Leave it and firewall_rule_end_ip_address unset to create no rule at all, which is what a server reached over a private endpoint wants."
+  type        = string
+  default     = null
+}
 
-    The owner is a PostgreSQL role authenticated with a username and a generated password. The role is named `owner_username`, or `<name>_owner` when that is left unset.
-  EOT
+variable "firewall_rule_end_ip_address" {
+  description = "Last address the firewall rule allows in."
+  type        = string
+  default     = null
+}
 
-  type = list(object({
-    name           = string
-    charset        = optional(string, "UTF8")
-    collation      = optional(string, "en_US.utf8")
-    owner_username = optional(string)
-  }))
-  default = []
+variable "entra_administrator" {
+  description = "Entra principal that becomes a Microsoft Entra administrator of the server. Terraform signs in as this principal to mark the workload identity role as an Entra principal, which only an Entra administrator may do, so it has to be the identity Terraform runs as or a group that identity belongs to."
+  type = object({
+    object_id      = string
+    principal_name = string
+    principal_type = optional(string, "User")
+  })
 
   validation {
-    condition     = length(distinct([for db in var.databases : db.name])) == length(var.databases)
-    error_message = "Database names must be unique."
+    condition     = contains(["User", "Group", "ServicePrincipal"], var.entra_administrator.principal_type)
+    error_message = "entra_administrator.principal_type must be one of User, Group or ServicePrincipal."
+  }
+}
+
+variable "database_name" {
+  description = "Name of the database this configuration creates."
+  type        = string
+}
+
+variable "database_charset" {
+  description = "Encoding of the database."
+  type        = string
+  default     = "UTF8"
+}
+
+variable "database_collation" {
+  description = "Collation of the database."
+  type        = string
+  default     = "en_US.utf8"
+}
+
+variable "owner_username" {
+  description = "Name of the role that owns the database and authenticates with a generated password. Defaults to <database_name>_owner."
+  type        = string
+  default     = null
+}
+
+variable "owner_login" {
+  description = "Whether the owner role itself signs in. Set it to false once the application has moved to the workload identity: the owner role keeps owning the database and everything in it, but it can no longer sign in, and its generated password and Key Vault secret stop existing."
+  type        = bool
+  default     = true
+}
+
+variable "workload_identity_name" {
+  description = "Name of the user assigned managed identity this configuration creates for the application. It is also the name of the PostgreSQL role, because that is the name Entra ID resolves when the identity signs in. Defaults to id-<database_name>."
+  type        = string
+  default     = null
+
+  validation {
+    # The name ends up as a PostgreSQL role name as well, and a role name that
+    # needs quoting in every statement about it is a nuisance rather than an
+    # error, so the safe subset is required here.
+    condition     = var.workload_identity_name == null || can(regex("^[a-zA-Z][a-zA-Z0-9-_]{2,127}$", var.workload_identity_name))
+    error_message = "workload_identity_name has to be 3 to 128 characters of letters, digits, dashes and underscores, and start with a letter."
   }
 }
 
 variable "revoke_public_connect" {
-  description = "Revoke the CONNECT privilege of the PUBLIC role on every managed database, so that only the database owner and the administrators can connect to it."
+  description = "Revoke the CONNECT privilege of the PUBLIC role on the database, so that only its owner, the workload identity and the administrators can connect to it."
   type        = bool
   default     = true
 }
 
 variable "tags" {
-  description = "Tags applied to the resource group, the server and the vault."
+  description = "Tags applied to the resource group and the server."
   type        = map(string)
   default     = {}
 }
 
 variable "key_vault_name" {
-  description = "Name of the Azure Key Vault the generated owner passwords are written to. Has to be globally unique. Leave it unset to skip the vault entirely, in which case the passwords are only available in the state and through the owner_passwords output."
+  description = "Name of the Azure Key Vault the generated owner password is written to. Has to be globally unique. Leave it unset to skip the vault entirely, in which case the password is only available in the state and through the owner_password output."
   type        = string
   default     = null
 
@@ -202,28 +210,6 @@ variable "key_vault_public_network_access_enabled" {
   default     = true
 }
 
-variable "key_vault_network_acls" {
-  description = <<-EOT
-    Network ACL of the vault, or null for a vault that accepts every address its public network access allows.
-
-    Terraform writes the secrets over the data plane, so an ACL that denies by default has to list the address Terraform runs from in `ip_rules`.
-  EOT
-
-  type = object({
-    bypass                     = optional(string, "AzureServices")
-    default_action             = optional(string, "Deny")
-    ip_rules                   = optional(list(string), [])
-    virtual_network_subnet_ids = optional(list(string), [])
-  })
-  default = null
-}
-
-variable "key_vault_rbac_propagation_wait" {
-  description = "How long to wait after granting the deployer access to the vault before writing the first secret. A fresh role assignment takes a while to reach the data plane, and a secret written before it is there fails with \"Caller is not authorized to perform action on resource\"."
-  type        = string
-  default     = "60s"
-}
-
 variable "key_vault_grant_deployer_access" {
   description = "Create a Key Vault Secrets Officer role assignment on the vault for the identity Terraform runs as. Creating a vault grants no access to its secrets, so without this the secrets cannot be written. Turn it off when the access is granted outside of this configuration, for example because the identity Terraform runs as may not create role assignments."
   type        = bool
@@ -231,7 +217,7 @@ variable "key_vault_grant_deployer_access" {
 }
 
 variable "key_vault_store_administrator_password" {
-  description = "Also store administrator_password in the vault, next to the generated owner passwords. It is not generated here, but keeping it with them makes the vault the single place holding the credentials of the server."
+  description = "Also store administrator_password in the vault, next to the generated owner password. It is not generated here, but keeping it there makes the vault the single place holding the credentials of the server."
   type        = bool
   default     = true
 }
