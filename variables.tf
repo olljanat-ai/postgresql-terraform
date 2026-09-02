@@ -14,6 +14,12 @@ variable "location" {
   default     = "swedencentral"
 }
 
+variable "enable_telemetry" {
+  description = "Whether the Azure Verified Modules report their usage to Microsoft. The modules do it by attaching a deployment with a module specific identifier to the subscription, which carries no data about the resources themselves. See https://aka.ms/avm/telemetryinfo."
+  type        = bool
+  default     = true
+}
+
 variable "server_name" {
   description = "Name of the Azure Database for PostgreSQL flexible server. Has to be globally unique."
   type        = string
@@ -46,6 +52,37 @@ variable "zone" {
   description = "Availability zone the server is placed in. Pinning it keeps Azure from moving the server to another zone on a later apply."
   type        = string
   default     = "1"
+}
+
+variable "high_availability" {
+  description = <<-EOT
+    High availability of the server, or null for a server without a standby.
+
+    Not every SKU and region offers it: the burstable SKUs, the `B_` prefixed ones, offer none, so a server on those has to set this to null.
+  EOT
+
+  type = object({
+    mode                      = string
+    standby_availability_zone = optional(string)
+  })
+  default = {
+    mode = "ZoneRedundant"
+  }
+
+  validation {
+    condition     = var.high_availability == null || contains(["SameZone", "ZoneRedundant"], try(var.high_availability.mode, ""))
+    error_message = "high_availability.mode has to be either SameZone or ZoneRedundant."
+  }
+}
+
+variable "maintenance_window" {
+  description = "Window Azure applies its maintenance in, or null to let Azure schedule it. `day_of_week` runs from 0, Sunday, to 6, and the start time is in UTC."
+  type = object({
+    day_of_week  = optional(string)
+    start_hour   = optional(number)
+    start_minute = optional(number)
+  })
+  default = null
 }
 
 variable "storage_mb" {
@@ -94,6 +131,15 @@ variable "firewall_rule_end_ip_address" {
   description = "Last address the firewall rule allows in."
   type        = string
   default     = null
+
+  validation {
+    # This used to be a precondition on the server resource, which the module
+    # took over. A variable validation may read another variable from Terraform
+    # 1.9 onwards, so the pair is checked here instead, and the message names
+    # both regardless of which one was left out.
+    condition     = (var.firewall_rule_start_ip_address == null) == (var.firewall_rule_end_ip_address == null)
+    error_message = "firewall_rule_start_ip_address and firewall_rule_end_ip_address have to be set together, or both left unset."
+  }
 }
 
 variable "entra_administrator" {
@@ -160,7 +206,7 @@ variable "revoke_public_connect" {
 }
 
 variable "tags" {
-  description = "Tags applied to the resource group and the server."
+  description = "Tags applied to the resource group, the server, the workload identity and the vault."
   type        = map(string)
   default     = {}
 }
@@ -208,6 +254,28 @@ variable "key_vault_public_network_access_enabled" {
   description = "Whether the vault is reachable from the public internet. Terraform writes the secrets over the data plane, so it needs network access to the vault."
   type        = bool
   default     = true
+}
+
+variable "key_vault_network_acls" {
+  description = <<-EOT
+    Network ACL of the vault, or null for a vault that accepts every address its public network access allows.
+
+    Terraform writes the secrets over the data plane, so an ACL that denies by default has to list the address Terraform runs from in `ip_rules`.
+  EOT
+
+  type = object({
+    bypass                     = optional(string, "AzureServices")
+    default_action             = optional(string, "Deny")
+    ip_rules                   = optional(list(string), [])
+    virtual_network_subnet_ids = optional(list(string), [])
+  })
+  default = null
+}
+
+variable "key_vault_rbac_propagation_wait" {
+  description = "How long to wait after granting the deployer access to the vault before writing the first secret. A fresh role assignment takes a while to reach the data plane, and a secret written before it is there fails with \"Caller is not authorized to perform action on resource\"."
+  type        = string
+  default     = "60s"
 }
 
 variable "key_vault_grant_deployer_access" {

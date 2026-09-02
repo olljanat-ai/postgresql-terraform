@@ -1,10 +1,20 @@
 terraform {
-  required_version = ">= 1.5.0"
+  # The AVM Key Vault module requires 1.11, the other three 1.9, so the
+  # strictest of them sets the floor here.
+  required_version = ">= 1.11.0, < 2.0.0"
 
   required_providers {
+    # Used by the AVM resource group module, which creates the group through
+    # the Azure Resource Manager API directly rather than through azurerm.
+    azapi = {
+      source  = "Azure/azapi"
+      version = "~> 2.4"
+    }
+    # The AVM PostgreSQL module allows ~> 4.12 and the Key Vault module
+    # >= 4.81, < 5.1, so the overlap is >= 4.81 and below 5.0.
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = ">= 4.0"
+      version = ">= 4.81.0, < 5.0.0"
     }
     # 1.25 is the first release carrying postgresql_security_label, which is how
     # a role is turned into a Microsoft Entra principal here.
@@ -15,10 +25,6 @@ terraform {
     random = {
       source  = "hashicorp/random"
       version = ">= 3.5"
-    }
-    time = {
-      source  = "hashicorp/time"
-      version = ">= 0.9"
     }
   }
 
@@ -37,6 +43,14 @@ terraform {
 provider "azurerm" {
   features {}
 
+  subscription_id = var.subscription_id
+}
+
+# The AVM modules pull in azapi, either directly or through the shared AVM
+# interface module, so it is configured against the same subscription as
+# azurerm instead of being left to fall back to the Azure CLI default. The time
+# provider is gone: the Key Vault module owns the RBAC propagation wait now.
+provider "azapi" {
   subscription_id = var.subscription_id
 }
 

@@ -1,21 +1,21 @@
 output "resource_group_name" {
   description = "Name of the resource group."
-  value       = azurerm_resource_group.this.name
+  value       = module.resource_group.name
 }
 
 output "server_id" {
   description = "Resource id of the PostgreSQL flexible server."
-  value       = azurerm_postgresql_flexible_server.this.id
+  value       = module.postgresql_server.resource_id
 }
 
 output "server_name" {
   description = "Name of the PostgreSQL flexible server."
-  value       = azurerm_postgresql_flexible_server.this.name
+  value       = module.postgresql_server.name
 }
 
 output "fqdn" {
   description = "Host name of the PostgreSQL flexible server."
-  value       = azurerm_postgresql_flexible_server.this.fqdn
+  value       = module.postgresql_server.fqdn
 }
 
 output "administrator_login" {
@@ -45,17 +45,17 @@ output "workload_identity_role" {
 
 output "workload_identity_id" {
   description = "Resource id of the user assigned managed identity. This is what attaches it to the virtual machine, App Service or AKS workload that runs the application."
-  value       = azurerm_user_assigned_identity.workload.id
+  value       = module.workload_identity.resource_id
 }
 
 output "workload_identity_client_id" {
   description = "Client id of the user assigned managed identity. A workload that has more than one identity attached has to name this one when it asks the instance metadata endpoint for an access token."
-  value       = azurerm_user_assigned_identity.workload.client_id
+  value       = module.workload_identity.client_id
 }
 
 output "workload_identity_principal_id" {
   description = "Object id of the service principal of the user assigned managed identity. This is the oid the PostgreSQL security label maps the role to, and what a role assignment elsewhere in Azure would be granted to."
-  value       = azurerm_user_assigned_identity.workload.principal_id
+  value       = module.workload_identity.principal_id
 }
 
 output "owner_password" {
@@ -66,25 +66,25 @@ output "owner_password" {
 
 output "key_vault_id" {
   description = "Resource id of the Key Vault holding the passwords, or null when no vault is created."
-  value       = one(azurerm_key_vault.this[*].id)
+  value       = one(module.key_vault[*].resource_id)
 }
 
 output "key_vault_name" {
   description = "Name of the Key Vault holding the passwords, or null when no vault is created."
-  value       = one(azurerm_key_vault.this[*].name)
+  value       = one(module.key_vault[*].name)
 }
 
 output "key_vault_uri" {
   description = "Data plane URI of the Key Vault holding the passwords, or null when no vault is created."
-  value       = one(azurerm_key_vault.this[*].vault_uri)
+  value       = one(module.key_vault[*].uri)
 }
 
 output "owner_password_secret" {
   description = "Name of the Key Vault secret holding the owner password, or null when there is no vault or the owner does not sign in."
-  value       = one(azurerm_key_vault_secret.owner[*].name)
+  value       = local.key_vault_enabled && var.owner_login ? module.key_vault[0].secrets_resource_ids["owner"].name : null
 }
 
 output "administrator_password_secret" {
   description = "Name of the Key Vault secret holding the administrator password, or null when it is not stored in the vault."
-  value       = one(azurerm_key_vault_secret.administrator[*].name)
+  value       = local.key_vault_enabled && var.key_vault_store_administrator_password ? module.key_vault[0].secrets_resource_ids["administrator"].name : null
 }
