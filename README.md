@@ -17,15 +17,55 @@ more, `owner_login = false` retires it.
 The generated owner password is written into an Azure Key Vault, so that the
 application has somewhere to read it from that is not the Terraform state.
 
+The Azure resources come from [Azure Verified Modules](https://aka.ms/AVM), the
+Terraform modules Microsoft publishes for Azure. Everything inside PostgreSQL —
+the database, the roles, the grants, the security label that turns a role into
+an Entra principal — is not an Azure resource and is managed directly with the
+`postgresql` provider.
+
 ## Layout
 
 | File                            | Contents                                            |
 | ------------------------------- | --------------------------------------------------- |
 | `versions.tf`                   | Provider requirements and the two PostgreSQL providers. |
 | `variables.tf`                  | Input variables.                                    |
-| `main.tf`                       | Resource group, server, managed identity, database, roles and Key Vault. |
+| `main.tf`                       | Resource group, server and managed identity, all AVM modules. |
+| `database.tf`                   | The database, its roles, the grants and the security label. |
+| `key_vault.tf`                  | The Key Vault and its secrets, an AVM module.       |
 | `outputs.tf`                    | Outputs.                                            |
 | `environments/prototype.tfvars` | A worked example.                                   |
+
+## Modules
+
+| Module                                                                                                                                              | Version | Creates                                                     |
+| --------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ----------------------------------------------------------- |
+| [`Azure/avm-res-resources-resourcegroup/azurerm`](https://registry.terraform.io/modules/Azure/avm-res-resources-resourcegroup/azurerm)               | 0.4.0   | the resource group                                          |
+| [`Azure/avm-res-dbforpostgresql-flexibleserver/azurerm`](https://registry.terraform.io/modules/Azure/avm-res-dbforpostgresql-flexibleserver/azurerm) | 0.2.3   | the server, its firewall rule and its Entra administrator   |
+| [`Azure/avm-res-managedidentity-userassignedidentity/azurerm`](https://registry.terraform.io/modules/Azure/avm-res-managedidentity-userassignedidentity/azurerm) | 0.5.2 | the workload identity                              |
+| [`Azure/avm-res-keyvault-vault/azurerm`](https://registry.terraform.io/modules/Azure/avm-res-keyvault-vault/azurerm)                                 | 0.11.0  | the Key Vault, its RBAC and its secrets                     |
+
+The modules are pinned to an exact version. They are all below `1.0.0`, which is
+where the AVM framework keeps them until it goes generally available, so a minor
+bump is allowed to break and the release notes are worth the minute before
+raising one of these pins.
+
+Three module defaults differ from what this configuration wants and are
+therefore always passed explicitly, empty or null included:
+
+* `firewall_rules` on the server defaults to an `AllowAllFireWallRule` spanning
+  `0.0.0.0`–`255.255.255.255`.
+* `high_availability` defaults to a zone redundant standby, which the burstable
+  SKUs do not offer at all, so `high_availability = null` is what a `B_` server
+  needs. `maintenance_window` likewise defaults to Sunday midnight UTC rather
+  than to letting Azure schedule it.
+* `network_acls` on the vault defaults to denying every address, which would
+  lock Terraform out of the data plane it writes the secrets over.
+
+The modules report their usage to Microsoft by attaching an empty deployment
+carrying a module identifier to the subscription. It says nothing about the
+resources themselves and is described in
+[the AVM telemetry note](https://aka.ms/avm/telemetryinfo). Set
+`enable_telemetry = false` to turn it off for every module at once.
 
 ## Usage
 
@@ -187,7 +227,8 @@ with it.
 
 Steps 3 and 4 both hang off one fact: the owner role owns the database. That is
 why the database is created by `postgresql_database` with an explicit `owner`,
-and not by `azurerm_postgresql_flexible_server_database`. A database created
+and not by `azurerm_postgresql_flexible_server_database`, which is also what the
+`databases` input of the AVM PostgreSQL module goes through. A database created
 over the Azure Resource Manager API is owned by the role the control plane runs
 as, not by the owner role, and the two steps then fall apart in order:
 
@@ -210,6 +251,11 @@ SELECT datname, pg_get_userbyid(datdba) AS owner, datacl FROM pg_database;
 The owner column has to name the owner role. Where the database already exists
 and is owned by somebody else, `ALTER DATABASE <name> OWNER TO <owner role>`
 moves it, and rerunning the apply is then enough.
+
+No module can close this gap: the ARM API has no owner field on a database at
+all, so `CREATE DATABASE ... OWNER` is only reachable over the PostgreSQL wire
+protocol. This is the one part of the configuration where AVM has nothing to
+offer, and it is the part the whole design rests on.
 
 `postgresql_grant_role.owner_to_administrator` is what makes any of this legal.
 The Azure administrator login is not a superuser, and PostgreSQL only lets a
@@ -664,7 +710,22 @@ runs as to be allowed to create role assignments, so Owner or User Access
 Administrator on the resource group or the subscription. When that access is
 granted outside of this configuration instead, set
 `key_vault_grant_deployer_access = false`. A fresh role assignment takes a while
-to reach the data plane, which is what the one minute wait in `main.tf` is for.
+to reach the data plane, which the module waits out before writing the first
+secret — a minute here (`key_vault_rbac_propagation_wait`) rather than the
+thirty seconds it defaults to.
+
+The module also puts a firewall on the vault that denies every address unless
+`key_vault_network_acls` is `null`, which is what it is by default here so that
+Terraform keeps reaching the data plane. Narrowing it to the addresses that
+need the vault is a matter of setting that variable:
+
+```hcl
+key_vault_network_acls = {
+  default_action = "Deny"
+  bypass         = "AzureServices"
+  ip_rules       = ["203.0.113.7/32"]
+}
+```
 
 Grant the application reading the password the **Key Vault Secrets User** role
 on the vault or on the secret. That is deliberately not done here, because it is
@@ -718,6 +779,8 @@ built-in administrator over the primary connection.
 | `postgresql_version`                      | Major PostgreSQL version, 15 or newer.                                                 | `string` | `"15"`             |    no    |
 | `sku_name`                                | SKU of the server.                                                                     | `string` | `"B_Standard_B2s"` |    no    |
 | `zone`                                    | Availability zone the server is pinned to.                                             | `string` | `"1"`              |    no    |
+| `high_availability`                       | Standby of the server. `null` for none, which is what the burstable SKUs allow.        | `object` | `{ mode = "ZoneRedundant" }` | no |
+| `maintenance_window`                      | Window Azure applies its maintenance in. `null` lets Azure schedule it.                | `object` | `null`             |    no    |
 | `storage_mb`                              | Storage in megabytes.                                                                  | `number` | `32768`            |    no    |
 | `backup_retention_days`                   | Days backups are kept.                                                                 | `number` | `7`                |    no    |
 | `administrator_login`                     | Login of the built-in administrator.                                                   | `string` | `"pgadmin"`        |    no    |
@@ -734,12 +797,15 @@ built-in administrator over the primary connection.
 | `owner_login`                             | Whether the owner role itself signs in.                                                | `bool`   | `true`             |    no    |
 | `workload_identity_name`                  | Name of the user assigned managed identity created here, and of its PostgreSQL role.   | `string` | `"id-<db>"`        |    no    |
 | `revoke_public_connect`                   | Revoke `CONNECT` from `PUBLIC` on the database.                                        | `bool`   | `true`             |    no    |
-| `tags`                                    | Tags applied to the resource group and the server.                                     | `map`    | `{}`               |    no    |
+| `tags`                                    | Tags applied to the resource group, the server, the identity and the vault.            | `map`    | `{}`               |    no    |
+| `enable_telemetry`                        | Whether the AVM modules report their usage to Microsoft.                               | `bool`   | `true`             |    no    |
 | `key_vault_name`                          | Key Vault the owner password is written to. Unset skips the vault.                     | `string` | `null`             |    no    |
 | `key_vault_sku_name`                      | SKU of the vault.                                                                      | `string` | `"standard"`       |    no    |
 | `key_vault_soft_delete_retention_days`    | Days a deleted vault can be recovered, 7 to 90.                                        | `number` | `7`                |    no    |
 | `key_vault_purge_protection_enabled`      | Keep a deleted vault for the whole retention period. Cannot be undone.                 | `bool`   | `false`            |    no    |
 | `key_vault_public_network_access_enabled` | Whether the vault is reachable from the internet.                                      | `bool`   | `true`             |    no    |
+| `key_vault_network_acls`                  | Firewall of the vault. `null` accepts every address its public network access allows.  | `object` | `null`             |    no    |
+| `key_vault_rbac_propagation_wait`         | Wait after granting the deployer access before writing the first secret.               | `string` | `"60s"`            |    no    |
 | `key_vault_grant_deployer_access`         | Assign Key Vault Secrets Officer on the vault to the identity Terraform runs as.       | `bool`   | `true`             |    no    |
 | `key_vault_store_administrator_password`  | Also store the administrator password in the vault.                                    | `bool`   | `true`             |    no    |
 
@@ -793,6 +859,17 @@ built-in administrator over the primary connection.
   drop and a create. Renaming it after the database exists therefore needs the
   ownership moving by hand first, the `public` schema of the database along with
   the database itself.
+* The floors in `versions.tf` come from the modules rather than from this
+  configuration: the Key Vault module needs Terraform 1.11 and the other three
+  1.9, and the azurerm range, `>= 4.81.0, < 5.0.0`, is the overlap of the four.
+  `azapi` is configured here because the resource group module goes through the
+  Azure Resource Manager API rather than through `azurerm`. `azure/modtm`, for
+  the telemetry above, and `hashicorp/time`, for the RBAC propagation wait,
+  come in through the modules and are not configured here.
+* The precondition that used to pair `firewall_rule_start_ip_address` with
+  `firewall_rule_end_ip_address` left with the server resource it hung off. It
+  is a validation on `firewall_rule_end_ip_address` now, reading the other
+  variable, which Terraform allows from 1.9 onwards.
 * An earlier revision of this configuration took a list of databases and created
   a role per entry. Moving state over from it means renaming the instances, for
   example `terraform state mv 'postgresql_role.owner["billing"]' postgresql_role.owner`.
