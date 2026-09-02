@@ -146,14 +146,9 @@ resource "azurerm_user_assigned_identity" "workload" {
   tags = var.tags
 }
 
-# A PostgreSQL database has exactly one owner, so a second identity reaches it
-# by being a member of the owner role rather than by owning it too. A member
-# passes every ownership check, because PostgreSQL tests ownership with
-# has_privs_of_role(current_user, owner) rather than current_user = owner, and
-# that includes the pg_database_owner membership carrying the public schema.
-#
-# The role has no password. What makes Entra ID able to sign in to it is the
-# security label below, not the way the role is created.
+# Delegate permissions for Entra ID object like pgaadauth_create_principal_with_oid does
+# https://learn.microsoft.com/en-us/azure/postgresql/security/security-manage-entra-users#create-a-role-by-using-the-microsoft-entra-id-object-identifier
+# https://github.com/cyrilgdn/terraform-provider-postgresql/issues/584#issuecomment-4865030248
 resource "postgresql_role" "workload_identity" {
   name  = azurerm_user_assigned_identity.workload.name
   login = true
