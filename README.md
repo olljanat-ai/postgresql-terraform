@@ -310,6 +310,106 @@ REASSIGN OWNED BY <old role> TO billing_app;
 Terraform does not do this: it is a one-off migration of data that already
 exists, not part of the desired state.
 
+## Troubleshooting
+
+### `permission denied for schema public`
+
+The sign in works, and the first statement comes back with:
+
+```
+ERROR:  permission denied for schema public
+LINE 1: CREATE TABLE IF NOT EXISTS test ()
+```
+
+Connecting proves that the role exists, that its password or token is accepted
+and that it holds `CONNECT` on the database. It proves nothing about ownership,
+and ownership is where every right *inside* the database comes from here. From
+PostgreSQL 15 onwards the `public` schema grants `CREATE` to `pg_database_owner`
+alone, and that resolves to whoever owns the database the session is connected
+to. The error therefore says one thing: the role that signed in is neither the
+owner of this database nor a member of that owner.
+
+Four values tell which of the four causes it is. Read them over the failing
+connection itself, as the role that fails and in the database it fails in, with
+the owner role name in place of `billing_app`:
+
+```sql
+SELECT current_database(), current_user;
+
+SELECT pg_get_userbyid(datdba) AS database_owner
+FROM pg_database WHERE datname = current_database();
+
+SELECT pg_get_userbyid(nspowner) AS schema_owner, nspacl
+FROM pg_namespace WHERE nspname = 'public';
+
+SELECT pg_has_role(current_user, 'billing_app', 'MEMBER') AS is_member,
+       pg_has_role(current_user, 'billing_app', 'USAGE')  AS inherits;
+```
+
+**1. The wrong database.** `current_database()` is `postgres` rather than the
+database this configuration created. A connection string that carries no
+`dbname` lands there, or in a database named after the user, and the owner role
+has no rights in either: it owns one database and only that one. Nothing is
+broken, name the database in the connection.
+
+**2. The database is owned by somebody else.** `database_owner` is not the owner
+role. This is where a database created over the Azure Resource Manager API ends
+up, whether by `azurerm_postgresql_flexible_server_database` or by
+`az postgres flexible-server db create`, and it is the usual answer when the
+roles and the grants have been carried into an existing deployment but the
+database itself was created elsewhere. See [Why the database is created by the
+postgresql provider](#why-the-database-is-created-by-the-postgresql-provider).
+Hand it over, as the Azure administrator, which may do so because
+`postgresql_grant_role.owner_to_administrator` made it a member of the owner
+role:
+
+```sql
+ALTER DATABASE billing OWNER TO billing_app;
+```
+
+Nothing inside the database is touched and no object changes hands. Reconnect
+and `public` follows on its own, because `pg_database_owner` is resolved per
+connection. Where the database is to be managed here from now on, import it as
+described in [Migrating a database created over the Azure
+API](#migrating-a-database-created-over-the-azure-api) rather than leaving the
+ownership change outside Terraform.
+
+**3. The `public` schema is owned by a role instead of `pg_database_owner`.**
+`schema_owner` should read `pg_database_owner` and `nspacl` should carry
+`pg_database_owner=UC/pg_database_owner`. A database restored from a dump taken
+on PostgreSQL 14 or older, or one whose schema was dropped and recreated by
+hand, has an ordinary role there instead, and moving the database then changes
+nothing at all. Run this in that database, as the administrator and after the
+database owner is right, so that the membership needed to hand the schema over
+exists:
+
+```sql
+ALTER SCHEMA public OWNER TO pg_database_owner;
+```
+
+**4. The role is not a member of the owner role.** `is_member` is false. A login
+created outside this configuration is an ordinary role with no rights in the
+database, whatever its password reaches. Make it a member, and have it create
+objects as the owner rather than as itself:
+
+```sql
+GRANT billing_app TO "app_login";
+ALTER ROLE "app_login" SET ROLE billing_app;
+```
+
+`ALTER ROLE ... SET ROLE` takes effect at the next sign in. Where `is_member` is
+true but `inherits` is false the membership is there and unused: the role is
+`NOINHERIT`, so it holds the privileges of the owner only while it has run
+`SET ROLE billing_app` by hand. `rolinherit` in `pg_roles` shows which of the
+two it is, and `ALTER ROLE "app_login" INHERIT` is the fix.
+
+`GRANT CREATE ON SCHEMA public TO billing_app` gets the failing statement
+through and is worth avoiding: it leaves the database owned by somebody else, so
+the next thing that rests on ownership fails in turn, whether that is revoking
+`CONNECT` from `PUBLIC`, adding the workload identity as a member of the owner,
+or dropping the owner role once the application has moved. The ownership is the
+fix.
+
 ## Where the passwords are kept
 
 Setting `key_vault_name` creates an Azure Key Vault into the same resource group
