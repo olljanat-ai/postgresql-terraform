@@ -220,6 +220,41 @@ resource "postgresql_database" "this" {
   depends_on = [postgresql_grant_role.owner_to_administrator]
 }
 
+# The public schema of a database Azure created is owned by azure_pg_admin and
+# grants nothing to pg_database_owner, so owning the database reaches into it
+# nowhere: the owner role is left with the USAGE that PUBLIC carries, and the
+# first CREATE TABLE fails with "permission denied for schema public" while
+# every ownership above it is right. Handing the schema over is the whole repair.
+# A database created here needs none of it: its public schema comes from
+# template0 owned by pg_database_owner, which already resolves to the owner role.
+# The statement runs there too, once, and moves the schema from the one to the
+# other without changing who may do what.
+#
+# The owner role rather than pg_database_owner, which is what template0 carries:
+# to hand an object to a role, the provider first makes the administrator a
+# member of it, and PostgreSQL refuses that for pg_database_owner, whose one
+# member is implicit and situation dependent. The two are the same thing in this
+# database anyway, because the owner role is what pg_database_owner resolves to
+# here.
+resource "postgresql_schema" "public" {
+  name     = "public"
+  database = postgresql_database.this.name
+  owner    = postgresql_role.owner.name
+
+  # The schema exists in every database, so this never creates one: the provider
+  # finds it and runs ALTER SCHEMA public OWNER TO instead.
+  #
+  # It does drop it on the way out, and DROP SCHEMA public RESTRICT fails
+  # against a database that holds anything, which would leave terraform destroy
+  # stuck on a schema that is about to go with the database. The cascade is what
+  # the database drop would do a moment later. Destroying this resource on its
+  # own, with -target or by taking the block out, therefore drops every table in
+  # the database with it.
+  drop_cascade = true
+
+  depends_on = [postgresql_grant_role.owner_to_administrator]
+}
+
 # Without this every role on the server can connect to the database through the
 # PUBLIC role.
 resource "postgresql_grant" "revoke_public_connect" {
